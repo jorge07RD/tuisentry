@@ -505,6 +505,11 @@ impl App {
                 }
             }
             Action::Reload => self.reload(),
+            Action::Stats(i) => {
+                // Sin dato previo se ve «calculando…» hasta que responde el motor.
+                self.stats.remove(&i);
+                self.send(Command::Stats(i));
+            }
             Action::Export(i) => {
                 let secs = self.view.window.unwrap_or(MEMORY_WINDOW);
                 self.send(Command::Export(i, secs));

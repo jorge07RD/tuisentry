@@ -193,11 +193,11 @@ pub fn items(screen: Screen, app: &App) -> Vec<MenuItem> {
                 Some(u) if u >= 0.9995 => "100%".into(),
                 Some(u) => format!("{:.1}%", u * 100.0),
             };
-            let uptime = app
-                .stats
-                .get(&i)
-                .map_or("calculando…".into(), |u| u.map(pct).join(" · "));
-            v.push(MenuItem::new("◔", "Uptime 24h·7d·30d", A::Block).badge(uptime));
+            let uptime = app.stats.get(&i).map_or("calculando…".into(), |u| {
+                format!("{} ⟳", u.map(pct).join(" · "))
+            });
+            // Tocarla recalcula desde el historial en disco.
+            v.push(MenuItem::new("◔", "Uptime 24h·7d·30d", A::Stats(i)).badge(uptime));
             v.push(MenuItem::new("⇩", "Exportar CSV", A::Export(i)));
             v.push(MenuItem::new("✎", "Editar", A::EditService(i)));
             v.push(MenuItem::new("✕", "Borrar", A::DeleteService(i)));

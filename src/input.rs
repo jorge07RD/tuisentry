@@ -22,6 +22,8 @@ pub enum Action {
     CopyUrl(usize),
     /// Exporta a CSV la ventana actual del servicio.
     Export(usize),
+    /// Recalcula el uptime de 24h/7d/30d de un servicio.
+    Stats(usize),
     /// `None` = todos los servicios.
     Check(Option<usize>),
     TogglePause(usize),
