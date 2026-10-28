@@ -10,7 +10,8 @@ use ratatui::{
 
 use crate::{
     app::{App, fmt_value},
-    input::{Action, HitMap, MENU_SCROLL},
+    form::{FieldKind, Form},
+    input::{Action, FORM_SCROLL, HitMap, MENU_SCROLL},
     menu::{self, MenuState, Screen},
     panels::{Ctx, chart},
 };
@@ -42,6 +43,12 @@ pub fn draw(f: &mut Frame, app: &App, hits: &mut HitMap) {
     }
     if let Some(m) = &app.menu {
         draw_menu(f, app, m, hits);
+    }
+    if let Some(form) = &app.form {
+        draw_form(f, app, form, hits);
+    }
+    if let Some(c) = &app.confirm {
+        draw_confirm(f, app, &c.message, hits);
     }
     draw_toast(f, body, app);
 }
@@ -594,6 +601,223 @@ fn draw_help(f: &mut Frame, app: &App, hits: &mut HitMap) {
         Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(inner);
     f.render_widget(Paragraph::new(lines), text);
     button_row(f, buttons, app, &[(" ✕ Cerrar ", Action::Close)], hits);
+}
+
+/// Formulario: una etiqueta y un control por campo, con botones fijos abajo.
+fn draw_form(f: &mut Frame, app: &App, form: &Form, hits: &mut HitMap) {
+    let t = &app.theme;
+    let screen = f.area();
+    let full = screen.width < NARROW || app.view.touch;
+    let area = if full {
+        screen
+    } else {
+        popup(screen, 72, screen.height)
+    };
+    hits.modal_strict(screen);
+    f.render_widget(Clear, area);
+    let block = card(
+        app,
+        Line::styled(format!(" ✎ {} ", form.title), Style::new().fg(t.fg).bold()),
+    );
+    let inner = block.inner(area).inner(Margin::new(1, 0));
+    f.render_widget(block, area);
+
+    let gap: u16 = if full { 1 } else { 0 };
+    let btn_h: u16 = if full { 2 } else { 1 };
+    let err_h = u16::from(form.error.is_some()) * 2;
+    let [body, error, buttons] = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(err_h),
+        Constraint::Length(btn_h),
+    ])
+    .areas(inner);
+
+    // Cada campo ocupa: etiqueta + control(es) + separación.
+    let heights: Vec<u16> = form
+        .fields
+        .iter()
+        .map(|fl| {
+            let controls = match &fl.kind {
+                FieldKind::Multi(opts) => (opts.len().max(1) as u16) * (1 + gap),
+                _ => 1,
+            };
+            1 + controls + 1
+        })
+        .collect();
+    let total: u16 = heights.iter().sum();
+    let max = total.saturating_sub(body.height) as usize;
+    // Sin scroll manual, el campo enfocado queda a la vista.
+    let focus_top: u16 = heights[..form.focus.min(heights.len())].iter().sum();
+    let focus_bottom = focus_top + heights.get(form.focus).copied().unwrap_or(0);
+    let mut scroll = form.scroll.min(max) as u16;
+    if focus_bottom > scroll + body.height {
+        scroll = focus_bottom.saturating_sub(body.height);
+    }
+    if focus_top < scroll {
+        scroll = focus_top;
+    }
+
+    let mut y = body.y as i32 - i32::from(scroll);
+    for (i, fl) in form.fields.iter().enumerate() {
+        let focused = i == form.focus;
+        let row = |dy: i32| -> Option<Rect> {
+            let yy = y + dy;
+            (yy >= body.y as i32 && yy < body.bottom() as i32)
+                .then(|| Rect::new(body.x, yy as u16, body.width, 1))
+        };
+        if let Some(r) = row(0) {
+            let style = if focused {
+                Style::new().fg(t.accent).bold()
+            } else {
+                Style::new().fg(t.dim)
+            };
+            f.render_widget(Span::styled(fl.label, style), r);
+            f.render_widget(Line::styled(fl.help, t.dim).right_aligned(), r);
+            hits.push(r, Action::FormFocus(i));
+        }
+        let field_bg = Style::new()
+            .fg(t.fg)
+            .bg(if focused { t.border } else { t.surface });
+        match &fl.kind {
+            FieldKind::Text | FieldKind::Number => {
+                if let Some(r) = row(1) {
+                    f.buffer_mut().set_style(r, field_bg);
+                    let mut text = fl.value.clone();
+                    if focused {
+                        let at = text
+                            .char_indices()
+                            .nth(fl.cursor)
+                            .map_or(text.len(), |(b, _)| b);
+                        text.insert(at, '▏');
+                    }
+                    // Si no cabe, se muestra el final (donde suele estar el cursor).
+                    let w = r.width.saturating_sub(2) as usize;
+                    let chars: Vec<char> = text.chars().collect();
+                    let shown: String = chars[chars.len().saturating_sub(w)..].iter().collect();
+                    f.render_widget(Span::styled(format!(" {shown}"), field_bg), r);
+                    hits.push(
+                        Rect {
+                            y: r.y.saturating_sub(1),
+                            height: 2,
+                            ..r
+                        },
+                        Action::FormFocus(i),
+                    );
+                }
+            }
+            FieldKind::Select(_) => {
+                if let Some(r) = row(1) {
+                    f.buffer_mut().set_style(r, field_bg);
+                    let shown = if fl.value.is_empty() {
+                        "—"
+                    } else {
+                        fl.value.as_str()
+                    };
+                    f.render_widget(Line::styled(shown, field_bg).centered(), r);
+                    let arrow = Style::new()
+                        .fg(t.accent)
+                        .bg(field_bg.bg.unwrap_or_default())
+                        .bold();
+                    f.render_widget(Span::styled(" ◄ ", arrow), r);
+                    f.render_widget(Line::styled(" ► ", arrow).right_aligned(), r);
+                    hits.push(r, Action::FormNext(i));
+                    hits.push(Rect { width: 5, ..r }, Action::FormPrev(i));
+                    hits.push(
+                        Rect::new(r.right().saturating_sub(5), r.y, 5, 1),
+                        Action::FormNext(i),
+                    );
+                }
+            }
+            FieldKind::Multi(options) => {
+                let sel = fl.selected();
+                if options.is_empty()
+                    && let Some(r) = row(1)
+                {
+                    f.render_widget(Span::styled("(no hay servicios)", t.dim), r);
+                }
+                for (k, opt) in options.iter().enumerate() {
+                    let Some(r) = row(1 + k as i32 * i32::from(1 + gap)) else {
+                        continue;
+                    };
+                    let on = sel.contains(&opt.as_str());
+                    if focused && k == form.opt {
+                        f.buffer_mut().set_style(r, Style::new().bg(t.border));
+                    }
+                    f.render_widget(
+                        Line::from(vec![
+                            Span::styled(
+                                if on { "[✓] " } else { "[ ] " },
+                                if on { t.ok } else { t.dim },
+                            ),
+                            Span::styled(opt.as_str(), t.fg),
+                        ]),
+                        r,
+                    );
+                    hits.push(
+                        Rect {
+                            height: 1 + gap,
+                            ..r
+                        },
+                        Action::FormToggle(i, k),
+                    );
+                }
+            }
+        }
+        y += i32::from(heights[i]);
+    }
+    hits.scroll(body, FORM_SCROLL, max);
+
+    if let Some(err) = &form.error {
+        f.render_widget(
+            Paragraph::new(format!("✗ {err}"))
+                .style(Style::new().fg(t.err))
+                .wrap(ratatui::widgets::Wrap { trim: true }),
+            error,
+        );
+    }
+    button_row(
+        f,
+        buttons,
+        app,
+        &[
+            (" ✓ Guardar ", Action::FormSave),
+            (" ✕ Cancelar ", Action::FormCancel),
+        ],
+        hits,
+    );
+}
+
+fn draw_confirm(f: &mut Frame, app: &App, message: &str, hits: &mut HitMap) {
+    let t = &app.theme;
+    let screen = f.area();
+    let area = popup(screen, 54, 7);
+    hits.modal(screen, area);
+    f.render_widget(Clear, area);
+    let block = card(
+        app,
+        Line::styled(" Confirmar ", Style::new().fg(t.warn).bold()),
+    );
+    let inner = block.inner(area).inner(Margin::new(1, 0));
+    f.render_widget(block, area);
+    let btn_h = if app.view.touch { 2 } else { 1 };
+    let [text, buttons] =
+        Layout::vertical([Constraint::Fill(1), Constraint::Length(btn_h)]).areas(inner);
+    f.render_widget(
+        Paragraph::new(message)
+            .style(Style::new().fg(t.fg))
+            .wrap(ratatui::widgets::Wrap { trim: true }),
+        text,
+    );
+    button_row(
+        f,
+        buttons,
+        app,
+        &[
+            (" ✓ Sí ", Action::ConfirmYes),
+            (" ✕ No ", Action::ConfirmNo),
+        ],
+        hits,
+    );
 }
 
 /// Recorta a `max` columnas con `…` al final.

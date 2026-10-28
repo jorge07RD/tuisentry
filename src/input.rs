@@ -5,8 +5,10 @@ use ratatui::{
 
 use crate::{menu::Screen, view::Sort};
 
-/// Identificador de scroll del menú en el `HitMap` (los paneles usan su índice).
+/// Identificadores de scroll del menú y del formulario en el `HitMap`
+/// (los paneles usan su índice).
 pub const MENU_SCROLL: usize = usize::MAX;
+pub const FORM_SCROLL: usize = usize::MAX - 1;
 
 /// Todo lo que se puede hacer con un toque, un clic o una tecla.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,6 +49,23 @@ pub enum Action {
     SetTheme(u8),
     Reload,
     EditConfig,
+    NewService,
+    EditService(usize),
+    /// Pide confirmación antes de borrar.
+    DeleteService(usize),
+    NewPanel,
+    /// Quita el panel enfocado de la página actual (con confirmación).
+    RemovePanel,
+    NewPage,
+    FormFocus(usize),
+    FormPrev(usize),
+    FormNext(usize),
+    /// (campo, opción) de un selector múltiple.
+    FormToggle(usize, usize),
+    FormSave,
+    FormCancel,
+    ConfirmYes,
+    ConfirmNo,
 }
 
 /// Texto que, tras dibujar, se reescribe como hipervínculo OSC 8.
@@ -88,6 +107,13 @@ impl HitMap {
         self.links.clear();
         self.push(screen, Action::Close);
         self.push(popup, Action::Block);
+    }
+
+    /// Como `modal`, pero tocar fuera no hace nada (para no perder lo escrito).
+    pub fn modal_strict(&mut self, screen: Rect) {
+        self.scrolls.clear();
+        self.links.clear();
+        self.push(screen, Action::Block);
     }
 
     pub fn link(&mut self, pos: Position, text: &str, url: &str, fg: Color) {

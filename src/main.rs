@@ -2,7 +2,9 @@ mod alerts;
 mod app;
 mod checks;
 mod config;
+mod config_edit;
 mod engine;
+mod form;
 mod input;
 mod links;
 mod menu;
@@ -29,7 +31,10 @@ use anyhow::{Context, Result, bail};
 use ratatui::{
     DefaultTerminal,
     crossterm::{
-        event::{self, DisableMouseCapture, EnableMouseCapture},
+        event::{
+            self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste,
+            EnableMouseCapture,
+        },
         execute,
     },
 };
@@ -150,10 +155,10 @@ async fn main() -> Result<()> {
     let mut app = App::new(cfg, args.config.clone(), args.web, backend.cmd.clone());
 
     let mut terminal = ratatui::init();
-    execute!(stdout(), EnableMouseCapture)?;
+    execute!(stdout(), EnableMouseCapture, EnableBracketedPaste)?;
     let hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let _ = execute!(stdout(), DisableMouseCapture);
+        let _ = execute!(stdout(), DisableMouseCapture, DisableBracketedPaste);
         hook(info);
     }));
 
@@ -232,7 +237,7 @@ async fn main() -> Result<()> {
         }
     };
 
-    execute!(stdout(), DisableMouseCapture)?;
+    execute!(stdout(), DisableMouseCapture, DisableBracketedPaste)?;
     ratatui::restore();
     // Cerrar los canales deja que el motor escriba lo pendiente al disco.
     drop(app);
@@ -246,7 +251,7 @@ fn edit_config(path: &Path, terminal: &mut DefaultTerminal, reading: &AtomicBool
     reading.store(false, Ordering::Relaxed);
     // Da tiempo al hilo lector a salir de su `poll`.
     std::thread::sleep(Duration::from_millis(150));
-    execute!(stdout(), DisableMouseCapture)?;
+    execute!(stdout(), DisableMouseCapture, DisableBracketedPaste)?;
     ratatui::restore();
 
     let editor = std::env::var("VISUAL")
@@ -259,7 +264,7 @@ fn edit_config(path: &Path, terminal: &mut DefaultTerminal, reading: &AtomicBool
         .status();
 
     *terminal = ratatui::init();
-    execute!(stdout(), EnableMouseCapture)?;
+    execute!(stdout(), EnableMouseCapture, EnableBracketedPaste)?;
     reading.store(true, Ordering::Relaxed);
     status?;
     Ok(())

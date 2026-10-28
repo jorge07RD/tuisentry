@@ -146,6 +146,7 @@ pub fn items(screen: Screen, app: &App) -> Vec<MenuItem> {
         Screen::Services => {
             let all_paused = !app.services.is_empty() && app.services.iter().all(|s| s.paused);
             let mut v = vec![
+                MenuItem::new("+", "Añadir servicio", A::NewService),
                 MenuItem::new("⟳", "Comprobar todo", A::Check(None)),
                 if all_paused {
                     MenuItem::new("▶", "Reanudar todo", A::PauseAll)
@@ -188,6 +189,8 @@ pub fn items(screen: Screen, app: &App) -> Vec<MenuItem> {
                 .map_or("calculando…".into(), |u| u.map(pct).join(" · "));
             v.push(MenuItem::new("◔", "Uptime 24h·7d·30d", A::Block).badge(uptime));
             v.push(MenuItem::new("⇩", "Exportar CSV", A::Export(i)));
+            v.push(MenuItem::new("✎", "Editar", A::EditService(i)));
+            v.push(MenuItem::new("✕", "Borrar", A::DeleteService(i)));
             v
         }
         Screen::Alerts => {
@@ -240,6 +243,9 @@ pub fn items(screen: Screen, app: &App) -> Vec<MenuItem> {
                 MenuItem::new("⇅", "Ordenar", A::MenuGo(Screen::Sort)).badge(app.view.sort.label()),
                 MenuItem::new("✗", "Solo caídos", A::ToggleDownOnly).toggle(app.view.down_only),
                 MenuItem::new("≡", "Filas amplias (táctil)", A::ToggleTouch).toggle(app.view.touch),
+                MenuItem::new("+", "Añadir panel a esta página", A::NewPanel),
+                MenuItem::new("−", "Quitar el panel enfocado", A::RemovePanel),
+                MenuItem::new("+", "Nueva página", A::NewPage),
             ]
         }
         Screen::Window => {

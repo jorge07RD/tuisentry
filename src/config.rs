@@ -164,8 +164,12 @@ impl Config {
     pub fn load(path: &Path) -> Result<Self> {
         let raw = std::fs::read_to_string(path)
             .with_context(|| format!("no pude leer {}", path.display()))?;
-        let mut cfg: Config = toml::from_str(&raw)
-            .with_context(|| format!("config inválida en {}", path.display()))?;
+        Self::parse(&raw).with_context(|| format!("config inválida en {}", path.display()))
+    }
+
+    /// Parsea y valida, añadiendo la página por defecto si no hay ninguna.
+    pub fn parse(raw: &str) -> Result<Self> {
+        let mut cfg: Config = toml::from_str(raw)?;
         if cfg.pages.is_empty() {
             cfg.pages.push(PageCfg {
                 title: "Overview".into(),

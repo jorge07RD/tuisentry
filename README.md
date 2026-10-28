@@ -62,14 +62,22 @@ Con menos de 100 columnas se muestra un panel a la vez, pensado para el celular.
 
 | Sección   | Qué tiene                                                              |
 |-----------|------------------------------------------------------------------------|
-| Servicios | comprobar todo · pausar/reanudar todo · por servicio: detalle, abrir, copiar URL, comprobar, pausar |
-| Vista     | ventana de tiempo (5m–24h) · ordenar (config, nombre, estado, latencia) · solo caídos · filas táctiles |
+| Servicios | añadir · comprobar todo · pausar/reanudar todo · por servicio: detalle, abrir, copiar URL, comprobar, pausar, silenciar, editar, borrar |
+| Vista     | ventana de tiempo (5m–24h) · ordenar (config, nombre, estado, latencia) · solo caídos · filas táctiles · añadir/quitar paneles · nueva página |
 | Historial | incidentes abiertos y cerrados con su duración                         |
 | Alertas   | enviar prueba · canales configurados · silenciar por servicio           |
 | Ajustes   | tema · recargar config · editar config en `$EDITOR`                      |
 
 Cada servicio muestra además su uptime de 24h/7d/30d y se puede exportar a CSV
 (`~/tuisentry-<servicio>-<fecha>.csv`).
+
+### Editar desde la app
+
+Servicios, paneles y páginas se pueden crear, editar y borrar desde el menú con
+formularios táctiles; los campos se adaptan al tipo (un `http` pide URL, un
+`systemd` pide unidad y host). Los cambios se escriben en tu `config.toml`
+**conservando comentarios y orden**, y solo si el resultado es válido. Al
+renombrar o borrar un servicio también se actualizan los paneles que lo usan.
 
 ### Alertas
 

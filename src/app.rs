@@ -4,6 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use anyhow::Result;
 use ratatui::crossterm::event::{
     Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
     MouseEventKind,
@@ -12,8 +13,10 @@ use tokio::sync::mpsc;
 
 use crate::{
     config::Config,
+    config_edit,
     engine::{Command, Event, Incident, ServiceInfo},
-    input::{Action, HitMap, MENU_SCROLL},
+    form::{self, Form},
+    input::{Action, FORM_SCROLL, HitMap, MENU_SCROLL},
     links,
     menu::{MenuState, Screen},
     panels::{self, Panel, fmt_span},
@@ -108,6 +111,19 @@ pub struct Page {
     pub scroll: Vec<usize>,
 }
 
+/// Operación destructiva a la espera de confirmación.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Pending {
+    DeleteService(String),
+    RemovePanel { page: usize, panel: usize },
+}
+
+#[derive(Debug)]
+pub struct Confirm {
+    pub message: String,
+    pub op: Pending,
+}
+
 /// Lo que solo puede hacer `main`, porque necesita la terminal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Effect {
@@ -140,6 +156,8 @@ pub struct App {
     pub stats: HashMap<usize, [Option<f64>; 3]>,
     /// Canales de alerta configurados (para el menú).
     pub channels: Vec<String>,
+    pub form: Option<Form>,
+    pub confirm: Option<Confirm>,
     cmd: mpsc::UnboundedSender<Command>,
     /// Dónde empezó el toque/clic actual y la última fila vista al arrastrar.
     press: Option<(u16, u16)>,
@@ -181,6 +199,8 @@ impl App {
             incidents: vec![],
             stats: HashMap::new(),
             channels: vec![],
+            form: None,
+            confirm: None,
             cmd,
             press: None,
             drag_y: 0,
@@ -289,6 +309,8 @@ impl App {
         match Config::load(&self.cfg_path) {
             Ok(cfg) => {
                 self.cfg = cfg;
+                // Las páginas cambian ya; los servicios llegan con el próximo Snapshot.
+                self.build_pages();
                 self.send(Command::Reload);
             }
             Err(e) => self.toast(format!("config inválida: {e:#}")),
@@ -371,7 +393,9 @@ impl App {
                 self.help = !self.help;
             }
             Action::Close => {
-                if self.menu.is_some() {
+                if self.confirm.is_some() {
+                    self.confirm = None;
+                } else if self.menu.is_some() {
                     self.menu = None;
                 } else if self.help {
                     self.help = false;
@@ -457,6 +481,172 @@ impl App {
                 self.menu = None;
                 self.effects.push(Effect::EditConfig);
             }
+            Action::NewService => self.open_form(Form::new_service(self.host_names())),
+            Action::EditService(i) => {
+                let name = &self.services[i].name;
+                match self.cfg.services.iter().find(|s| &s.name == name) {
+                    Some(sc) => self.open_form(Form::edit_service(sc, self.host_names())),
+                    None => self.toast("ese servicio no está en la config"),
+                }
+            }
+            Action::DeleteService(i) => {
+                let name = self.services[i].name.clone();
+                self.confirm = Some(Confirm {
+                    message: format!("¿Borrar {name} de la config? Su historial se conserva."),
+                    op: Pending::DeleteService(name),
+                });
+            }
+            Action::NewPanel => {
+                let names = self.services.iter().map(|s| s.name.clone()).collect();
+                let title = self.page().title.clone();
+                self.open_form(Form::new_panel(self.page, &title, names));
+            }
+            Action::RemovePanel => {
+                let page = self.page();
+                let panel = self.zoom.unwrap_or(page.focus);
+                match page.panels.get(panel) {
+                    Some(p) => {
+                        self.confirm = Some(Confirm {
+                            message: format!("¿Quitar el panel «{}» de {}?", p.title(), page.title),
+                            op: Pending::RemovePanel {
+                                page: self.page,
+                                panel,
+                            },
+                        });
+                        self.menu = None;
+                    }
+                    None => self.toast("esta página no tiene paneles"),
+                }
+            }
+            Action::NewPage => self.open_form(Form::new_page()),
+            Action::FormFocus(i) => {
+                if let Some(f) = &mut self.form {
+                    f.focus_field(i);
+                }
+            }
+            Action::FormPrev(i) | Action::FormNext(i) => {
+                if let Some(f) = &mut self.form {
+                    f.cycle(
+                        i,
+                        if matches!(a, Action::FormNext(_)) {
+                            1
+                        } else {
+                            -1
+                        },
+                    );
+                }
+            }
+            Action::FormToggle(i, opt) => {
+                if let Some(f) = &mut self.form {
+                    f.toggle(i, opt);
+                }
+            }
+            Action::FormSave => self.save_form(),
+            Action::FormCancel => self.form = None,
+            Action::ConfirmNo => self.confirm = None,
+            Action::ConfirmYes => {
+                if let Some(c) = self.confirm.take() {
+                    self.run_pending(c.op);
+                }
+            }
+        }
+    }
+
+    fn host_names(&self) -> Vec<String> {
+        self.cfg.hosts.iter().map(|h| h.name.clone()).collect()
+    }
+
+    fn open_form(&mut self, f: Form) {
+        self.menu = None;
+        self.selected = None;
+        self.form = Some(f);
+    }
+
+    /// Aplica el formulario a la config; si algo falla, el error queda en el formulario.
+    fn save_form(&mut self) {
+        let Some(f) = &self.form else { return };
+        let result = (|| -> Result<String> {
+            let mut doc = config_edit::read(&self.cfg_path)?;
+            let msg = match &f.target {
+                form::Target::Service(None) => {
+                    config_edit::add_service(&mut doc, &f.service_values())?;
+                    format!("✓ {} añadido", f.value("name"))
+                }
+                form::Target::Service(Some(old)) => {
+                    config_edit::update_service(&mut doc, old, &f.service_values())?;
+                    format!("✓ {} guardado", f.value("name"))
+                }
+                form::Target::Panel(page) => {
+                    let p = config_edit::NewPanel {
+                        kind: f.value("kind"),
+                        title: f.value("title"),
+                        services: f
+                            .fields
+                            .iter()
+                            .find(|x| x.key == "services")
+                            .map(|x| x.selected().into_iter().map(String::from).collect())
+                            .unwrap_or_default(),
+                        window: f.value("window"),
+                    };
+                    config_edit::add_panel(&mut doc, *page, &p)?;
+                    "✓ panel añadido".into()
+                }
+                form::Target::Page => {
+                    let title = f.value("title");
+                    if title.trim().is_empty() {
+                        anyhow::bail!("la página necesita un título");
+                    }
+                    config_edit::add_page(&mut doc, &title);
+                    format!("✓ página {title} creada")
+                }
+            };
+            config_edit::save(&self.cfg_path, &doc)?;
+            Ok(msg)
+        })();
+        match result {
+            Ok(msg) => {
+                // Una página nueva va al final: se abre directamente.
+                let new_page = (f.target == form::Target::Page).then_some(self.cfg.pages.len());
+                self.form = None;
+                self.reload();
+                if let Some(p) = new_page {
+                    self.page = p.min(self.pages.len().saturating_sub(1));
+                }
+                self.toast(msg);
+            }
+            Err(e) => {
+                if let Some(f) = &mut self.form {
+                    f.error = Some(format!("{e:#}"));
+                }
+            }
+        }
+    }
+
+    fn run_pending(&mut self, op: Pending) {
+        let result = (|| -> Result<String> {
+            let mut doc = config_edit::read(&self.cfg_path)?;
+            let msg = match &op {
+                Pending::DeleteService(name) => {
+                    config_edit::delete_service(&mut doc, name)?;
+                    format!("✕ {name} borrado")
+                }
+                Pending::RemovePanel { page, panel } => {
+                    config_edit::remove_panel(&mut doc, *page, *panel)?;
+                    "panel quitado".into()
+                }
+            };
+            config_edit::save(&self.cfg_path, &doc)?;
+            Ok(msg)
+        })();
+        match result {
+            Ok(msg) => {
+                self.menu = None;
+                self.selected = None;
+                self.zoom = None;
+                self.reload();
+                self.toast(msg);
+            }
+            Err(e) => self.toast(format!("no se pudo: {e:#}")),
         }
     }
 
@@ -464,6 +654,13 @@ impl App {
         match ev {
             TermEvent::Key(k) if k.kind == KeyEventKind::Press => self.on_key(k),
             TermEvent::Mouse(m) => self.on_mouse(m),
+            TermEvent::Paste(text) => {
+                if let Some(f) = &mut self.form {
+                    f.paste(&text);
+                } else if let Some(m) = &mut self.menu {
+                    m.query.push_str(text.trim());
+                }
+            }
             _ => {}
         }
     }
@@ -473,6 +670,21 @@ impl App {
         self.mouse_free_until = None;
         if k.code == KeyCode::Char('c') && k.modifiers.contains(KeyModifiers::CONTROL) {
             return self.apply(Action::Quit);
+        }
+        if self.confirm.is_some() {
+            return match k.code {
+                KeyCode::Enter | KeyCode::Char('s' | 'y') => self.apply(Action::ConfirmYes),
+                KeyCode::Esc | KeyCode::Char('n') => self.apply(Action::ConfirmNo),
+                _ => {}
+            };
+        }
+        if let Some(f) = &mut self.form {
+            match f.key(k) {
+                form::Outcome::Save => self.save_form(),
+                form::Outcome::Cancel => self.form = None,
+                form::Outcome::Continue => {}
+            }
+            return;
         }
         if self.menu.is_some() {
             return self.menu_key(k);
@@ -582,6 +794,11 @@ impl App {
         let s = if target == MENU_SCROLL {
             match &mut self.menu {
                 Some(m) => &mut m.scroll,
+                None => return,
+            }
+        } else if target == FORM_SCROLL {
+            match &mut self.form {
+                Some(f) => &mut f.scroll,
                 None => return,
             }
         } else {
