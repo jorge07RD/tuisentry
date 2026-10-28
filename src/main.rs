@@ -240,7 +240,7 @@ async fn main() -> Result<()> {
         tokio::select! {
             Some(ev) = events.recv() => app.on_event(ev),
             Some(ev) = backend.events.recv() => app.on_engine(ev),
-            _ = tick.tick() => {}
+            _ = tick.tick() => app.follow_system_theme(),
         }
         // Agrupa lo que haya llegado mientras tanto en un solo redibujo.
         while let Ok(ev) = events.try_recv() {

@@ -1,4 +1,6 @@
-use ratatui::style::Color;
+use std::{collections::HashMap, path::PathBuf, time::SystemTime};
+
+use ratatui::{style::Color, widgets::BorderType};
 
 #[derive(Debug, Clone)]
 pub struct Theme {
@@ -12,17 +14,76 @@ pub struct Theme {
     /// Fondo de popups, botones y pestaña activa; el resto usa el fondo de la terminal.
     pub surface: Color,
     pub series: [Color; 6],
+    /// Omarchy usa esquinas rectas; los demás temas, redondeadas.
+    pub border_type: BorderType,
 }
 
 const fn hex(c: u32) -> Color {
     Color::Rgb((c >> 16) as u8, (c >> 8) as u8, c as u8)
 }
 
+/// `#rrggbb` → color.
+fn parse_hex(s: &str) -> Option<Color> {
+    let s = s.trim().strip_prefix('#')?;
+    (s.len() == 6).then_some(())?;
+    u32::from_str_radix(s, 16).ok().map(hex)
+}
+
+fn rgb(c: Color) -> (f64, f64, f64) {
+    match c {
+        Color::Rgb(r, g, b) => (f64::from(r), f64::from(g), f64::from(b)),
+        _ => (0.0, 0.0, 0.0),
+    }
+}
+
+/// Mezcla `a` hacia `b` en proporción `t` (0 = a, 1 = b).
+fn mix(a: Color, b: Color, t: f64) -> Color {
+    let ((ar, ag, ab), (br, bg, bb)) = (rgb(a), rgb(b));
+    let m = |x: f64, y: f64| (x + (y - x) * t).round().clamp(0.0, 255.0) as u8;
+    Color::Rgb(m(ar, br), m(ag, bg), m(ab, bb))
+}
+
+/// Paleta del tema activo de Omarchy.
+pub fn omarchy_colors_path() -> Option<PathBuf> {
+    let p = dirs::home_dir()?.join(".local/state/omarchy/current/theme/colors.toml");
+    p.exists().then_some(p)
+}
+
+/// Nombre del tema activo de Omarchy, p. ej. `void`.
+pub fn omarchy_theme_name() -> Option<String> {
+    let p = dirs::home_dir()?.join(".local/state/omarchy/current/theme.name");
+    Some(std::fs::read_to_string(p).ok()?.trim().to_string())
+}
+
+/// Nombre para mostrar: `omarchy` lleva el tema del sistema al lado.
+pub fn display_name(name: &str) -> String {
+    match (name, omarchy_theme_name()) {
+        ("omarchy", Some(sys)) => format!("omarchy · {sys}"),
+        _ => name.into(),
+    }
+}
+
+/// Fecha de modificación de la paleta de Omarchy, para notar cambios de tema.
+pub fn omarchy_stamp() -> Option<SystemTime> {
+    omarchy_colors_path()?.metadata().ok()?.modified().ok()
+}
+
 impl Theme {
-    pub const NAMES: [&str; 3] = ["tokyonight", "catppuccin", "gruvbox"];
+    /// `omarchy` sigue el tema del sistema; el resto son paletas fijas.
+    pub const NAMES: [&str; 4] = ["omarchy", "tokyonight", "catppuccin", "gruvbox"];
+
+    /// Tema por defecto: el de Omarchy si está instalado.
+    pub fn default_name() -> &'static str {
+        if omarchy_colors_path().is_some() {
+            "omarchy"
+        } else {
+            "tokyonight"
+        }
+    }
 
     pub fn by_name(name: Option<&str>) -> Self {
-        match name.unwrap_or("tokyonight") {
+        match name.unwrap_or_else(|| Self::default_name()) {
+            "omarchy" => Self::omarchy().unwrap_or_else(|| Self::by_name(Some("tokyonight"))),
             "catppuccin" => Self {
                 fg: hex(0xcdd6f4),
                 dim: hex(0x6c7086),
@@ -33,6 +94,7 @@ impl Theme {
                 err: hex(0xf38ba8),
                 surface: hex(0x313244),
                 series: [0x89b4fa, 0xcba6f7, 0x94e2d5, 0xa6e3a1, 0xfab387, 0xf5c2e7].map(hex),
+                border_type: BorderType::Rounded,
             },
             "gruvbox" => Self {
                 fg: hex(0xebdbb2),
@@ -44,6 +106,7 @@ impl Theme {
                 err: hex(0xfb4934),
                 surface: hex(0x3c3836),
                 series: [0x83a598, 0xd3869b, 0x8ec07c, 0xb8bb26, 0xfe8019, 0xfabd2f].map(hex),
+                border_type: BorderType::Rounded,
             },
             _ => Self {
                 fg: hex(0xc0caf5),
@@ -55,11 +118,78 @@ impl Theme {
                 err: hex(0xf7768e),
                 surface: hex(0x292e42),
                 series: [0x7aa2f7, 0xbb9af7, 0x7dcfff, 0x9ece6a, 0xe0af68, 0xff9e64].map(hex),
+                border_type: BorderType::Rounded,
             },
         }
     }
 
+    /// Lee la paleta de Omarchy (`colors.toml`, la misma que usan la terminal,
+    /// btop y Walker) y la reparte en los roles de la interfaz.
+    pub fn omarchy() -> Option<Self> {
+        let raw = std::fs::read_to_string(omarchy_colors_path()?).ok()?;
+        Self::from_omarchy(&raw)
+    }
+
+    fn from_omarchy(raw: &str) -> Option<Self> {
+        let map: HashMap<String, String> = toml::from_str(raw).ok()?;
+        let get = |k: &str| map.get(k).and_then(|v| parse_hex(v));
+        let bg = get("background")?;
+        let fg = get("foreground")?;
+        let accent = get("accent").or_else(|| get("color4"))?;
+        let c = |n: u8, fallback: Color| get(&format!("color{n}")).unwrap_or(fallback);
+        // Los slots ANSI: 1 rojo, 2 verde, 3 amarillo, 4 azul, 5 magenta, 6 cian, 8 gris.
+        Some(Self {
+            fg,
+            dim: c(8, mix(bg, fg, 0.45)),
+            border: mix(bg, accent, 0.4),
+            accent,
+            ok: c(2, hex(0x9ece6a)),
+            warn: c(3, hex(0xe0af68)),
+            err: c(1, hex(0xf7768e)),
+            surface: mix(bg, accent, 0.18),
+            series: [
+                accent,
+                c(6, accent),
+                c(2, accent),
+                c(5, accent),
+                c(3, accent),
+                c(4, accent),
+            ],
+            border_type: BorderType::Plain,
+        })
+    }
+
     pub fn series(&self, i: usize) -> Color {
         self.series[i % self.series.len()]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_omarchy_palette() {
+        let t = Theme::from_omarchy(
+            r##"
+            accent = "#bb9af7"
+            background = "#000000"
+            foreground = "#ffffff"
+            color1 = "#ff0000"
+            color2 = "#00ff00"
+            color8 = "#808080"
+            "##,
+        )
+        .unwrap();
+        assert_eq!(t.accent, Color::Rgb(0xbb, 0x9a, 0xf7));
+        assert_eq!(t.err, Color::Rgb(255, 0, 0));
+        assert_eq!(t.ok, Color::Rgb(0, 255, 0));
+        assert_eq!(t.dim, Color::Rgb(128, 128, 128));
+        // Sin color3, el amarillo cae al de reserva.
+        assert_eq!(t.warn, hex(0xe0af68));
+        assert_eq!(t.border_type, BorderType::Plain);
+        // El borde queda entre el fondo y el acento.
+        assert_eq!(t.border, Color::Rgb(0x4b, 0x3e, 0x63));
+        assert!(Theme::from_omarchy("accent = 1").is_none());
     }
 }

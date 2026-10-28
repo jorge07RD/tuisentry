@@ -59,6 +59,15 @@ servicio), `Tab`/`1-9` páginas, `h`/`l` paneles, `j`/`k` scroll, `Enter` zoom,
 
 Con menos de 100 columnas se muestra un panel a la vez, pensado para el celular.
 
+### Temas
+
+Con `[theme] name = "omarchy"` (el valor por defecto si usas
+[Omarchy](https://omarchy.org)), tuisentry toma la paleta del tema activo del
+sistema (`~/.local/state/omarchy/current/theme/colors.toml`), con esquinas
+rectas como el resto de Omarchy, y se repinta solo cuando cambias de tema con
+`omarchy theme set`. También trae `tokyonight`, `catppuccin` y `gruvbox`, que se
+eligen desde Ajustes → Tema.
+
 ### Menú
 
 | Sección   | Qué tiene                                                              |

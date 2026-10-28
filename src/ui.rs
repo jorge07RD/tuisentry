@@ -5,7 +5,7 @@ use ratatui::{
     layout::{Constraint, Layout, Margin, Position, Rect},
     style::{Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, BorderType, Clear, Paragraph},
+    widgets::{Block, Clear, Paragraph},
 };
 
 use crate::{
@@ -182,7 +182,7 @@ fn draw_panel(f: &mut Frame, area: Rect, app: &App, idx: usize, hits: &mut HitMa
         Span::raw(" "),
     ]);
     let block = Block::bordered()
-        .border_type(BorderType::Rounded)
+        .border_type(app.theme.border_type)
         .border_style(if focused { t.accent } else { t.border })
         .title(title)
         .title(Line::styled(if zoomed { " ⤡ " } else { " ⤢ " }, t.dim).right_aligned());
@@ -306,7 +306,7 @@ fn popup(screen: Rect, max_w: u16, max_h: u16) -> Rect {
 
 fn card<'a>(app: &App, title: Line<'a>) -> Block<'a> {
     Block::bordered()
-        .border_type(BorderType::Rounded)
+        .border_type(app.theme.border_type)
         .border_style(app.theme.accent)
         .style(Style::new().bg(app.theme.surface))
         .title(title)

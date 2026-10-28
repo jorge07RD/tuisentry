@@ -2,7 +2,7 @@
 # Ruta por defecto: ~/.config/tuisentry/config.toml
 
 [theme]
-name = "tokyonight"            # tokyonight | catppuccin | gruvbox
+name = "omarchy"               # omarchy (sigue el tema del sistema) | tokyonight | catppuccin | gruvbox
 
 # Historial en disco (~/.local/state/tuisentry/history): gráficas que sobreviven
 # reinicios, incidentes, uptime de 30 días y exportar a CSV.

@@ -145,6 +145,8 @@ pub struct App {
     pub view: View,
     pub theme: Theme,
     pub theme_name: String,
+    /// Tema elegido a mano en el menú; `None` = el de la config o el de Omarchy.
+    theme_choice: Option<String>,
     pub toast: Option<(String, Instant)>,
     pub web: bool,
     pub quit: bool,
@@ -162,6 +164,8 @@ pub struct App {
     pub confirm: Option<Confirm>,
     /// De dónde vienen los datos (motor propio, solo vista o daemon).
     pub mode: Mode,
+    /// Última versión vista de la paleta de Omarchy, para seguir sus cambios.
+    theme_stamp: Option<std::time::SystemTime>,
     cmd: mpsc::UnboundedSender<Command>,
     /// Dónde empezó el toque/clic actual y la última fila vista al arrastrar.
     press: Option<(u16, u16)>,
@@ -176,11 +180,12 @@ impl App {
         cmd: mpsc::UnboundedSender<Command>,
     ) -> Self {
         let prefs = UiPrefs::load();
+        let theme_choice = prefs.theme.clone();
         let theme_name = prefs
             .theme
             .or_else(|| cfg.theme.name.clone())
             .filter(|n| Theme::NAMES.contains(&n.as_str()))
-            .unwrap_or_else(|| Theme::NAMES[0].into());
+            .unwrap_or_else(|| Theme::default_name().into());
         let mut app = Self {
             cfg,
             cfg_path,
@@ -194,6 +199,7 @@ impl App {
             view: prefs.view.unwrap_or_else(|| View::new(web)),
             theme: Theme::by_name(Some(&theme_name)),
             theme_name,
+            theme_choice,
             toast: None,
             web,
             quit: false,
@@ -206,6 +212,7 @@ impl App {
             form: None,
             confirm: None,
             mode: Mode::Local,
+            theme_stamp: crate::theme::omarchy_stamp(),
             cmd,
             press: None,
             drag_y: 0,
@@ -283,6 +290,19 @@ impl App {
         }
     }
 
+    /// Con el tema `omarchy`, repinta si el sistema cambió de tema
+    /// (`omarchy theme set` reescribe su `colors.toml`).
+    pub fn follow_system_theme(&mut self) {
+        if self.theme_name != "omarchy" {
+            return;
+        }
+        let stamp = crate::theme::omarchy_stamp();
+        if stamp != self.theme_stamp {
+            self.theme_stamp = stamp;
+            self.theme = Theme::by_name(Some("omarchy"));
+        }
+    }
+
     /// Cambia el motor con el que habla la UI (p. ej. al pasar al daemon).
     pub fn set_backend(&mut self, cmd: mpsc::UnboundedSender<Command>, mode: Mode) {
         self.cmd = cmd;
@@ -309,7 +329,7 @@ impl App {
 
     fn save_prefs(&self) {
         UiPrefs {
-            theme: Some(self.theme_name.clone()),
+            theme: self.theme_choice.clone(),
             view: Some(self.view.clone()),
         }
         .save();
@@ -478,7 +498,9 @@ impl App {
             Action::SetTheme(i) => {
                 if let Some(&name) = Theme::NAMES.get(usize::from(i)) {
                     self.theme_name = name.into();
+                    self.theme_choice = Some(name.into());
                     self.theme = Theme::by_name(Some(name));
+                    self.theme_stamp = crate::theme::omarchy_stamp();
                     self.save_prefs();
                 }
             }

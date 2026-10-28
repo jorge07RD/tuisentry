@@ -2,8 +2,16 @@
 //! y búsqueda que recorre todas a la vez (paleta de comandos).
 
 use crate::{
-    app::App, daemon, engine::Mode, input::Action, panels::fmt_span, store::unix_now, text::fold,
-    theme::Theme, time::human, view::Sort,
+    app::App,
+    daemon,
+    engine::Mode,
+    input::Action,
+    panels::fmt_span,
+    store::unix_now,
+    text::fold,
+    theme::{self, Theme},
+    time::human,
+    view::Sort,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -274,7 +282,8 @@ pub fn items(screen: Screen, app: &App) -> Vec<MenuItem> {
             .collect(),
         Screen::Settings => {
             let mut v = vec![
-                MenuItem::new("◐", "Tema", A::MenuGo(Screen::Theme)).badge(app.theme_name.clone()),
+                MenuItem::new("◐", "Tema", A::MenuGo(Screen::Theme))
+                    .badge(theme::display_name(&app.theme_name)),
                 MenuItem::new("⟳", "Recargar config", A::Reload),
                 MenuItem::new("✎", "Editar config en $EDITOR", A::EditConfig),
                 MenuItem::new("⇄", "Daemon (alertas 24/7)", A::MenuGo(Screen::Daemon)).badge(
@@ -316,7 +325,11 @@ pub fn items(screen: Screen, app: &App) -> Vec<MenuItem> {
             .iter()
             .enumerate()
             .map(|(i, &name)| {
-                MenuItem::new(check(app.theme_name == name), name, A::SetTheme(i as u8))
+                MenuItem::new(
+                    check(app.theme_name == name),
+                    theme::display_name(name),
+                    A::SetTheme(i as u8),
+                )
             })
             .collect(),
     }
