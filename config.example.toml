@@ -1,0 +1,92 @@
+# tuisentry — config de ejemplo
+# Ruta por defecto: ~/.config/tuisentry/config.toml
+
+[theme]
+name = "tokyonight"            # tokyonight | catppuccin | gruvbox
+
+# Hosts remotos, usados por checks `systemd` y `cmd` (vía ssh, con ControlMaster).
+# `ssh` puede ser user@host o un alias de ~/.ssh/config. Requiere login sin contraseña.
+# [[host]]
+# name = "vps"
+# ssh = "jorge@vps.example.com"
+
+# ── Servicios ────────────────────────────────────────────────────────────
+# kind = http | tcp | ping | systemd | cmd
+# interval / timeout: 500ms, 30s, 5m, 1h   (por defecto 30s / 10s)
+# link: URL a la que lleva el botón ↗ (http lo pone solo)
+
+[[service]]
+name = "example.com"
+kind = "http"
+target = "https://example.com"
+interval = "15s"
+
+[[service]]
+name = "Cloudflare DNS"
+kind = "ping"
+target = "1.1.1.1"
+interval = "5s"
+
+[[service]]
+name = "SSH local"
+kind = "tcp"
+target = "127.0.0.1:22"
+interval = "10s"
+
+[[service]]
+name = "API caída"
+kind = "http"
+target = "http://127.0.0.1:9"
+link = "https://github.com"
+timeout = "3s"
+
+[[service]]
+name = "NetworkManager"
+kind = "systemd"
+unit = "NetworkManager.service"
+# host = "vps"                 # para una unidad remota
+
+[[service]]
+name = "Disco /"
+kind = "cmd"
+command = "df --output=pcent / | tail -1"
+suffix = "%"
+interval = "1m"
+# host = "vps"                 # se ejecuta por ssh en ese host
+
+# ── Páginas y paneles ────────────────────────────────────────────────────
+# panel kind = status | chart | spark | gauge
+# services = [...] limita el panel; vacío = todos (o los de `host = "..."`)
+# window = "15m" ventana de tiempo para chart
+
+[[page]]
+title = "Overview"
+
+  [[page.panel]]
+  kind = "status"
+
+  [[page.panel]]
+  kind = "chart"
+  title = "Latencia"
+  services = ["example.com", "Cloudflare DNS", "SSH local"]
+  window = "10m"
+
+  [[page.panel]]
+  kind = "spark"
+
+  [[page.panel]]
+  kind = "gauge"
+
+[[page]]
+title = "Red"
+
+  [[page.panel]]
+  kind = "chart"
+  title = "Ping 1.1.1.1"
+  services = ["Cloudflare DNS"]
+  window = "5m"
+
+  [[page.panel]]
+  kind = "chart"
+  title = "HTTP"
+  services = ["example.com"]
