@@ -22,15 +22,17 @@ use self::{
     persist::Persist,
 };
 use crate::{
+    alerts::{
+        Alert, AlertKind, Evaluator,
+        notify::{self, Notifier},
+    },
     checks::{self, Check, Ctl, Tagged},
-    config::{Config, parse_duration},
+    config::{AlertsCfg, Config, parse_duration},
     prefs::{self, EnginePrefs},
     store::{History, MEMORY_WINDOW, Sample, unix_now},
     time,
 };
 
-/// Fallos seguidos antes de declarar un servicio caído.
-const FAIL_AFTER: u32 = 2;
 /// Incidentes cerrados que se cargan del disco y se envían a la UI.
 const RECENT_INCIDENTS: usize = 50;
 
@@ -47,6 +49,8 @@ pub enum Command {
     Stats(usize),
     /// Exporta a CSV las muestras de los últimos `secs` segundos.
     Export(usize, f64),
+    /// Manda una alerta de prueba por todos los canales.
+    TestAlert,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,6 +83,8 @@ pub enum Event {
         idx: usize,
         uptime: [Option<f64>; 3],
     },
+    /// Canales de alerta configurados.
+    Channels(Vec<String>),
     Toast(String),
 }
 
@@ -86,6 +92,8 @@ struct Runtime {
     info: ServiceInfo,
     history: History,
     tracker: Tracker,
+    eval: Evaluator,
+    slow_ms: Option<u64>,
     ctl: Ctl,
     task: JoinHandle<()>,
 }
@@ -105,6 +113,8 @@ pub struct Engine {
     persist: Persist,
     open: Vec<Incident>,
     recent: Vec<Incident>,
+    alerts: AlertsCfg,
+    notifiers: Arc<Vec<Box<dyn Notifier>>>,
 }
 
 impl Engine {
@@ -129,6 +139,8 @@ impl Engine {
             subs: vec![],
             prefs: EnginePrefs::load(),
             open: vec![],
+            alerts: AlertsCfg::default(),
+            notifiers: Arc::new(vec![]),
         };
         engine.start(&cfg)?;
         Ok(engine)
@@ -142,12 +154,20 @@ impl Engine {
             .iter()
             .map(|s| checks::build(s, cfg))
             .collect::<Result<Vec<_>>>()?;
-        let mut old: HashMap<String, (History, Tracker)> = self
+        let notifiers = cfg
+            .alerts
+            .channels
+            .iter()
+            .map(notify::build)
+            .collect::<Result<Vec<_>>>()?;
+        self.notifiers = Arc::new(notifiers);
+        self.alerts = cfg.alerts.clone();
+        let mut old: HashMap<String, (History, Tracker, Evaluator)> = self
             .services
             .drain(..)
             .map(|rt| {
                 rt.task.abort();
-                (rt.info.name, (rt.history, rt.tracker))
+                (rt.info.name, (rt.history, rt.tracker, rt.eval))
             })
             .collect();
         self.persist.close_all();
@@ -173,15 +193,15 @@ impl Engine {
                     .clone()
                     .unwrap_or_else(|| check.default_suffix().into()),
                 paused,
-                muted: self.prefs.muted.contains(&sc.name),
+                muted: sc.mute || self.prefs.muted.contains(&sc.name),
                 history: vec![],
             };
-            let (history, tracker) = old.remove(&sc.name).unwrap_or_else(|| {
+            let (history, tracker, eval) = old.remove(&sc.name).unwrap_or_else(|| {
                 let mut h = History::default();
                 for s in persist::load(&self.dir, &sc.name, unix_now() - MEMORY_WINDOW) {
                     h.push(s);
                 }
-                (h, Tracker::default())
+                (h, Tracker::default(), Evaluator::default())
             });
             let task = checks::spawn(
                 (self.generation, i),
@@ -194,6 +214,8 @@ impl Engine {
                 info,
                 history,
                 tracker,
+                eval,
+                slow_ms: sc.slow_ms.or(cfg.alerts.slow_ms),
                 ctl,
                 task,
             });
@@ -214,6 +236,10 @@ impl Engine {
             .collect()
     }
 
+    fn channels(&self) -> Vec<String> {
+        self.notifiers.iter().map(|n| n.label()).collect()
+    }
+
     fn incidents(&self) -> Vec<Incident> {
         self.open.iter().chain(&self.recent).cloned().collect()
     }
@@ -223,6 +249,7 @@ impl Engine {
         let (tx, rx) = mpsc::unbounded_channel();
         let _ = tx.send(Event::Snapshot(self.snapshot()));
         let _ = tx.send(Event::Incidents(self.incidents()));
+        let _ = tx.send(Event::Channels(self.channels()));
         self.subs.push(tx);
         rx
     }
@@ -262,13 +289,49 @@ impl Engine {
                     self.save_prefs();
                     self.broadcast(Event::Snapshot(self.snapshot()));
                     self.broadcast(Event::Incidents(self.incidents()));
+                    self.broadcast(Event::Channels(self.channels()));
                     self.broadcast(Event::Toast("config recargada".into()));
                 }
                 Err(e) => self.broadcast(Event::Toast(format!("config inválida: {e:#}"))),
             },
             Command::Stats(idx) => self.spawn_stats(idx),
             Command::Export(idx, secs) => self.spawn_export(idx, secs),
+            Command::TestAlert => {
+                if self.notifiers.is_empty() {
+                    self.broadcast(Event::Toast(
+                        "no hay canales: añade [[alerts.notify]] a la config".into(),
+                    ));
+                } else {
+                    self.dispatch(Alert {
+                        service: "tuisentry".into(),
+                        link: None,
+                        kind: AlertKind::Test,
+                    });
+                }
+            }
         }
+    }
+
+    /// Avisa en la UI y, si el servicio no está silenciado, por los canales.
+    fn dispatch(&mut self, alert: Alert) {
+        let muted = alert.kind != AlertKind::Test
+            && self
+                .services
+                .iter()
+                .any(|rt| rt.info.name == alert.service && rt.info.muted);
+        let suffix = if muted { " (silenciado)" } else { "" };
+        self.broadcast(Event::Toast(format!("{}{suffix}", alert.title())));
+        if muted || self.notifiers.is_empty() {
+            return;
+        }
+        let (notifiers, tx) = (self.notifiers.clone(), self.aux_tx.clone());
+        tokio::spawn(async move {
+            for n in notifiers.iter() {
+                if let Err(e) = n.send(&alert).await {
+                    let _ = tx.send(Event::Toast(format!("{}: {e:#}", n.label())));
+                }
+            }
+        });
     }
 
     fn spawn_stats(&mut self, idx: usize) {
@@ -342,11 +405,32 @@ impl Engine {
         };
         rt.history.push(sample.clone());
         let _ = self.persist.append(&rt.info.name, &sample);
-        let name = rt.info.name.clone();
-        let transition = rt.tracker.observe(&sample, FAIL_AFTER);
+        let (name, link) = (rt.info.name.clone(), rt.info.link.clone());
+        let transition = rt.tracker.observe(&sample, self.alerts.fail_after);
+        let extra = rt.eval.observe(&sample, rt.slow_ms, self.alerts.cert_days);
         self.broadcast(Event::Sample(idx, sample));
         if let Some(t) = transition {
+            let kind = match &t {
+                Transition::Down { cause, .. } => AlertKind::Down {
+                    cause: cause.clone(),
+                },
+                Transition::Up { duration, .. } => AlertKind::Recovered {
+                    duration: *duration,
+                },
+            };
             self.on_transition(&name, t);
+            self.dispatch(Alert {
+                service: name.clone(),
+                link: link.clone(),
+                kind,
+            });
+        }
+        for kind in extra {
+            self.dispatch(Alert {
+                service: name.clone(),
+                link: link.clone(),
+                kind,
+            });
         }
     }
 
@@ -392,7 +476,8 @@ impl Engine {
                 },
                 Some(sub) = subs.recv() => {
                     let ok = sub.send(Event::Snapshot(self.snapshot())).is_ok()
-                        && sub.send(Event::Incidents(self.incidents())).is_ok();
+                        && sub.send(Event::Incidents(self.incidents())).is_ok()
+                        && sub.send(Event::Channels(self.channels())).is_ok();
                     if ok {
                         self.subs.push(sub);
                     }

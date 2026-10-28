@@ -16,6 +16,8 @@ pub struct Config {
     pub pages: Vec<PageCfg>,
     #[serde(default)]
     pub history: HistoryCfg,
+    #[serde(default)]
+    pub alerts: AlertsCfg,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -42,6 +44,53 @@ impl Default for HistoryCfg {
 
 fn default_retention() -> String {
     "90d".into()
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AlertsCfg {
+    /// Fallos seguidos antes de declarar un servicio caído.
+    #[serde(default = "default_fail_after")]
+    pub fail_after: u32,
+    /// Latencia (ms) a partir de la cual se avisa de lentitud; sin valor, no se avisa.
+    pub slow_ms: Option<u64>,
+    /// Avisa cuando al certificado TLS le quedan estos días o menos.
+    #[serde(default = "default_cert_days")]
+    pub cert_days: i64,
+    #[serde(default, rename = "notify")]
+    pub channels: Vec<ChannelCfg>,
+}
+
+impl Default for AlertsCfg {
+    fn default() -> Self {
+        Self {
+            fail_after: default_fail_after(),
+            slow_ms: None,
+            cert_days: default_cert_days(),
+            channels: vec![],
+        }
+    }
+}
+
+fn default_fail_after() -> u32 {
+    2
+}
+
+fn default_cert_days() -> i64 {
+    14
+}
+
+/// Canal de notificación: `desktop` o `ntfy`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChannelCfg {
+    pub kind: String,
+    /// ntfy: tema al que te suscribes en la app.
+    pub topic: Option<String>,
+    /// ntfy: servidor, por defecto `https://ntfy.sh`.
+    pub server: Option<String>,
+    /// ntfy: token de acceso para temas protegidos.
+    pub token: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -75,6 +124,11 @@ pub struct ServiceCfg {
     pub interval: String,
     #[serde(default = "default_timeout")]
     pub timeout: String,
+    /// Umbral de lentitud propio; si falta, se usa `[alerts] slow_ms`.
+    pub slow_ms: Option<u64>,
+    /// Empieza silenciado (sin alertas); se puede cambiar desde el menú.
+    #[serde(default)]
+    pub mute: bool,
 }
 
 fn default_interval() -> String {
@@ -135,6 +189,14 @@ impl Config {
             bail!("no hay ningún [[service]] definido");
         }
         parse_duration(&self.history.retention).context("[history] retention")?;
+        for c in &self.alerts.channels {
+            match c.kind.as_str() {
+                "desktop" => {}
+                "ntfy" if c.topic.as_deref().is_some_and(|t| !t.is_empty()) => {}
+                "ntfy" => bail!("[[alerts.notify]] ntfy necesita `topic`"),
+                other => bail!("[[alerts.notify]] kind desconocido {other:?} (desktop, ntfy)"),
+            }
+        }
         let hosts: HashSet<_> = self.hosts.iter().map(|h| h.name.as_str()).collect();
         let mut names = HashSet::new();
         for s in &self.services {

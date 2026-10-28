@@ -36,6 +36,7 @@ pub struct Outcome {
     pub ok: bool,
     pub value: Option<f64>,
     pub detail: String,
+    pub cert_days: Option<i64>,
 }
 
 impl Outcome {
@@ -44,6 +45,7 @@ impl Outcome {
             ok: true,
             value,
             detail: detail.into(),
+            cert_days: None,
         }
     }
 
@@ -52,6 +54,7 @@ impl Outcome {
             ok: false,
             value: None,
             detail: detail.into(),
+            cert_days: None,
         }
     }
 }
@@ -153,6 +156,7 @@ pub fn spawn(
                 ok: out.ok,
                 value: out.value,
                 detail: out.detail,
+                cert_days: out.cert_days,
             };
             if tx.send((generation, idx, sample)).is_err() {
                 break;

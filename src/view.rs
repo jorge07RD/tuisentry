@@ -89,6 +89,7 @@ mod tests {
                 ok,
                 value: Some(v),
                 detail: String::new(),
+                ..Default::default()
             });
         }
         s

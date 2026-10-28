@@ -23,6 +23,9 @@ pub enum Action {
     /// `None` = todos los servicios.
     Check(Option<usize>),
     TogglePause(usize),
+    /// Silencia o reactiva las alertas de un servicio.
+    ToggleMute(usize),
+    TestAlert,
     /// Pausa todo, o reanuda todo si ya estaba todo pausado.
     PauseAll,
     Help,

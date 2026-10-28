@@ -12,7 +12,7 @@ pub fn unix_now() -> f64 {
         .map_or(0.0, |d| d.as_secs_f64())
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Sample {
     /// Segundos unix.
     pub at: f64,
@@ -20,6 +20,9 @@ pub struct Sample {
     /// Latencia en ms o el valor medido por un `cmd`; `None` si no aplica.
     pub value: Option<f64>,
     pub detail: String,
+    /// Días hasta que vence el certificado TLS (solo checks https).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cert_days: Option<i64>,
 }
 
 /// Lo que se guarda en memoria por servicio; lo anterior queda solo en disco.
@@ -112,6 +115,7 @@ mod tests {
             ok,
             value: Some(v),
             detail: String::new(),
+            ..Default::default()
         }
     }
 

@@ -58,6 +58,7 @@ mod tests {
             ok,
             value: None,
             detail: if ok { "ok" } else { "timeout" }.into(),
+            ..Default::default()
         }
     }
 

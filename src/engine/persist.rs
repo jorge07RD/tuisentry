@@ -164,6 +164,7 @@ pub fn load(dir: &Path, service: &str, since: f64) -> Vec<Sample> {
                     ok: rec.ok,
                     value: rec.v,
                     detail: detail.clone(),
+                    ..Default::default()
                 });
             }
         }
@@ -241,6 +242,7 @@ mod tests {
             ok,
             value: ok.then_some(12.5),
             detail: detail.into(),
+            ..Default::default()
         }
     }
 

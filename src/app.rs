@@ -138,6 +138,8 @@ pub struct App {
     pub incidents: Vec<Incident>,
     /// Uptime 24h/7d/30d por índice de servicio, calculado bajo demanda.
     pub stats: HashMap<usize, [Option<f64>; 3]>,
+    /// Canales de alerta configurados (para el menú).
+    pub channels: Vec<String>,
     cmd: mpsc::UnboundedSender<Command>,
     /// Dónde empezó el toque/clic actual y la última fila vista al arrastrar.
     press: Option<(u16, u16)>,
@@ -178,6 +180,7 @@ impl App {
             effects: vec![],
             incidents: vec![],
             stats: HashMap::new(),
+            channels: vec![],
             cmd,
             press: None,
             drag_y: 0,
@@ -247,6 +250,7 @@ impl App {
                 }
             }
             Event::Incidents(list) => self.incidents = list,
+            Event::Channels(list) => self.channels = list,
             Event::Stats { idx, uptime } => {
                 self.stats.insert(idx, uptime);
             }
@@ -342,6 +346,16 @@ impl App {
             Action::TogglePause(i) => {
                 let on = !self.services[i].paused;
                 self.send(Command::SetPaused(Some(i), on));
+            }
+            Action::ToggleMute(i) => {
+                let on = !self.services[i].muted;
+                self.send(Command::SetMuted(i, on));
+            }
+            Action::TestAlert => {
+                self.send(Command::TestAlert);
+                if !self.channels.is_empty() {
+                    self.toast("enviando alerta de prueba…");
+                }
             }
             Action::PauseAll => {
                 let on = !self.services.iter().all(|s| s.paused);

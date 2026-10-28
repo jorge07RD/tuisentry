@@ -9,6 +9,24 @@ name = "tokyonight"            # tokyonight | catppuccin | gruvbox
 [history]
 retention = "90d"              # lo más antiguo se borra al arrancar
 
+# Alertas: caída (tras `fail_after` fallos seguidos), recuperación, lentitud y
+# certificado por vencer. Se envían mientras tuisentry (o su daemon) corre.
+[alerts]
+fail_after = 2
+# slow_ms = 2000               # avisar si la latencia supera esto (también por servicio)
+cert_days = 14
+
+[[alerts.notify]]
+kind = "desktop"               # notify-send
+
+# Push al celular: instala la app ntfy y suscríbete al mismo tema.
+# Usa un nombre difícil de adivinar: los temas de ntfy.sh son públicos.
+# [[alerts.notify]]
+# kind = "ntfy"
+# topic = "tuisentry-cambia-esto-por-algo-aleatorio"
+# server = "https://ntfy.sh"   # o tu propio servidor
+# token = "tk_..."             # para temas protegidos
+
 # Hosts remotos, usados por checks `systemd` y `cmd` (vía ssh, con ControlMaster).
 # `ssh` puede ser user@host o un alias de ~/.ssh/config. Requiere login sin contraseña.
 # [[host]]
@@ -19,6 +37,7 @@ retention = "90d"              # lo más antiguo se borra al arrancar
 # kind = http | tcp | ping | systemd | cmd
 # interval / timeout: 500ms, 30s, 5m, 1h   (por defecto 30s / 10s)
 # link: URL a la que lleva el botón ↗ (http lo pone solo)
+# slow_ms: umbral de lentitud propio · mute = true: sin alertas
 
 [[service]]
 name = "example.com"

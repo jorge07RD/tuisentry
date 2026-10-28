@@ -65,10 +65,35 @@ Con menos de 100 columnas se muestra un panel a la vez, pensado para el celular.
 | Servicios | comprobar todo · pausar/reanudar todo · por servicio: detalle, abrir, copiar URL, comprobar, pausar |
 | Vista     | ventana de tiempo (5m–24h) · ordenar (config, nombre, estado, latencia) · solo caídos · filas táctiles |
 | Historial | incidentes abiertos y cerrados con su duración                         |
+| Alertas   | enviar prueba · canales configurados · silenciar por servicio           |
 | Ajustes   | tema · recargar config · editar config en `$EDITOR`                      |
 
 Cada servicio muestra además su uptime de 24h/7d/30d y se puede exportar a CSV
 (`~/tuisentry-<servicio>-<fecha>.csv`).
+
+### Alertas
+
+Avisos de caída, recuperación (con duración), lentitud y certificado TLS por
+vencer, por escritorio (`notify-send`) y/o push al celular con
+[ntfy](https://ntfy.sh). Tocar el push abre el recurso.
+
+```toml
+[alerts]
+fail_after = 2
+slow_ms = 2000
+cert_days = 14
+
+[[alerts.notify]]
+kind = "desktop"
+
+[[alerts.notify]]
+kind = "ntfy"
+topic = "un-nombre-dificil-de-adivinar"
+```
+
+Desde el menú **Alertas** puedes enviar una prueba y silenciar servicios. Las
+alertas se envían mientras tuisentry está abierto; para recibirlas siempre,
+activa el modo daemon.
 
 ### Historial
 

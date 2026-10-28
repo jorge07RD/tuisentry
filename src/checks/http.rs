@@ -40,22 +40,19 @@ impl Check for Http {
                 None => code < 400,
             };
             let mut detail = format!("HTTP {code} · {lat:.0} ms");
-            if let Some(days) = resp
+            let cert_days = resp
                 .extensions()
                 .get::<TlsInfo>()
                 .and_then(|i| i.peer_certificate())
-                .and_then(cert_days_left)
-            {
+                .and_then(cert_days_left);
+            if let Some(days) = cert_days {
                 detail.push_str(&format!(" · cert {days}d"));
             }
-            if ok {
-                Outcome::up(Some(lat), detail)
-            } else {
-                Outcome {
-                    ok,
-                    value: Some(lat),
-                    detail,
-                }
+            Outcome {
+                ok,
+                value: Some(lat),
+                detail,
+                cert_days,
             }
         })
     }

@@ -12,6 +12,7 @@ pub enum Screen {
     Services,
     Service(usize),
     History,
+    Alerts,
     View,
     Window,
     Sort,
@@ -96,6 +97,7 @@ pub fn title(screen: Screen, app: &App) -> String {
         Screen::Services => "Servicios".into(),
         Screen::Service(i) => app.services.get(i).map_or("?".into(), |s| s.name.clone()),
         Screen::History => "Historial".into(),
+        Screen::Alerts => "Alertas".into(),
         Screen::View => "Vista".into(),
         Screen::Window => "Ventana de tiempo".into(),
         Screen::Sort => "Ordenar".into(),
@@ -123,9 +125,18 @@ pub fn items(screen: Screen, app: &App) -> Vec<MenuItem> {
             if open > 0 {
                 history = history.badge(format!("{open} abiertos"));
             }
+            let alerts = MenuItem::new("◆", "Alertas", A::MenuGo(Screen::Alerts)).badge(match app
+                .channels
+                .len()
+            {
+                0 => "sin canales".into(),
+                1 => "1 canal".into(),
+                n => format!("{n} canales"),
+            });
             vec![
                 services,
                 history,
+                alerts,
                 MenuItem::new("▦", "Vista", A::MenuGo(Screen::View)),
                 MenuItem::new("⚙", "Ajustes", A::MenuGo(Screen::Settings)),
                 MenuItem::new("?", "Ayuda", A::Help),
@@ -165,6 +176,7 @@ pub fn items(screen: Screen, app: &App) -> Vec<MenuItem> {
             }
             v.push(MenuItem::new("⟳", "Comprobar ahora", A::Check(Some(i))));
             v.push(MenuItem::new("‖", "Pausado", A::TogglePause(i)).toggle(s.paused));
+            v.push(MenuItem::new("◆", "Silenciar alertas", A::ToggleMute(i)).toggle(s.muted));
             let pct = |u: Option<f64>| match u {
                 None => "–".into(),
                 Some(u) if u >= 0.9995 => "100%".into(),
@@ -176,6 +188,26 @@ pub fn items(screen: Screen, app: &App) -> Vec<MenuItem> {
                 .map_or("calculando…".into(), |u| u.map(pct).join(" · "));
             v.push(MenuItem::new("◔", "Uptime 24h·7d·30d", A::Block).badge(uptime));
             v.push(MenuItem::new("⇩", "Exportar CSV", A::Export(i)));
+            v
+        }
+        Screen::Alerts => {
+            let mut v = vec![MenuItem::new("◆", "Enviar alerta de prueba", A::TestAlert)];
+            if app.channels.is_empty() {
+                v.push(MenuItem::new(
+                    "!",
+                    "Sin canales: añade [[alerts.notify]]",
+                    A::Block,
+                ));
+            }
+            v.extend(
+                app.channels
+                    .iter()
+                    .map(|c| MenuItem::new("→", c.clone(), A::Block).badge("canal")),
+            );
+            v.extend(app.services.iter().enumerate().map(|(i, s)| {
+                MenuItem::new("◆", format!("Silenciar {}", s.name), A::ToggleMute(i))
+                    .toggle(s.muted)
+            }));
             v
         }
         Screen::History => {
@@ -254,9 +286,10 @@ pub fn items(screen: Screen, app: &App) -> Vec<MenuItem> {
 }
 
 /// Pantallas que la búsqueda recorre, además de una por servicio.
-const SEARCHABLE: [Screen; 7] = [
+const SEARCHABLE: [Screen; 8] = [
     Screen::Root,
     Screen::Services,
+    Screen::Alerts,
     Screen::View,
     Screen::Window,
     Screen::Sort,
