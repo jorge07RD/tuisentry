@@ -1,8 +1,20 @@
-use std::collections::VecDeque;
+use std::{
+    collections::VecDeque,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
-#[derive(Debug, Clone)]
+use serde::{Deserialize, Serialize};
+
+/// Hora actual en segundos unix, la escala de `Sample::at`.
+pub fn unix_now() -> f64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0.0, |d| d.as_secs_f64())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Sample {
-    /// Segundos desde el arranque de la app.
+    /// Segundos unix.
     pub at: f64,
     pub ok: bool,
     /// Latencia en ms o el valor medido por un `cmd`; `None` si no aplica.
@@ -11,7 +23,7 @@ pub struct Sample {
 }
 
 /// Historial acotado de muestras de un servicio.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct History {
     buf: VecDeque<Sample>,
     cap: usize,

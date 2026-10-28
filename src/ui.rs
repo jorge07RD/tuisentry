@@ -10,7 +10,8 @@ use ratatui::{
 
 use crate::{
     app::{App, fmt_value},
-    input::{Action, HitMap},
+    input::{Action, HitMap, MENU_SCROLL},
+    menu::{self, MenuState, Screen},
     panels::{Ctx, chart},
 };
 
@@ -39,6 +40,9 @@ pub fn draw(f: &mut Frame, app: &App, hits: &mut HitMap) {
     if app.help {
         draw_help(f, app, hits);
     }
+    if let Some(m) = &app.menu {
+        draw_menu(f, app, m, hits);
+    }
     draw_toast(f, body, app);
 }
 
@@ -46,8 +50,28 @@ fn draw_header(f: &mut Frame, band: Rect, app: &App, hits: &mut HitMap) {
     let t = &app.theme;
     let row = Rect { height: 1, ..band };
     let narrow = band.width < NARROW;
+    let menu_btn = Rect::new(row.x, row.y, 3, 1);
+    f.render_widget(
+        Span::styled(" ≡ ", Style::new().fg(t.fg).bg(t.surface).bold()),
+        menu_btn,
+    );
+    hits.push(
+        Rect {
+            height: band.height,
+            ..menu_btn
+        },
+        Action::Menu,
+    );
     let brand = if narrow { " ◆ " } else { " ◆ tuisentry " };
-    f.render_widget(Span::styled(brand, Style::new().fg(t.accent).bold()), row);
+    f.render_widget(
+        Span::styled(brand, Style::new().fg(t.accent).bold()),
+        Rect {
+            x: row.x + 3,
+            width: row.width.saturating_sub(3),
+            ..row
+        },
+    );
+    let brand = format!("≡ {brand}");
 
     let up = app
         .services
@@ -70,7 +94,7 @@ fn draw_header(f: &mut Frame, band: Rect, app: &App, hits: &mut HitMap) {
     let summary_w = summary.width() as u16;
     f.render_widget(summary, row);
 
-    let mut x = row.x + Line::raw(brand).width() as u16 + 1;
+    let mut x = row.x + Line::raw(brand.as_str()).width() as u16 + 1;
     let limit = row.right().saturating_sub(summary_w + 1);
     for (i, page) in app.pages.iter().enumerate() {
         let label = if narrow {
@@ -405,7 +429,7 @@ fn draw_detail(f: &mut Frame, app: &App, i: usize, hits: &mut HitMap) {
         now: app.now(),
         scroll: 0,
     };
-    chart::draw(f, chart_area, &[i], 15.0 * 60.0, &ctx, hits);
+    chart::draw(f, chart_area, &[i], ctx.window(15.0 * 60.0), &ctx, hits);
 
     let mut row: Vec<(&str, Action)> = vec![];
     if svc.link.is_some() {
@@ -413,10 +437,120 @@ fn draw_detail(f: &mut Frame, app: &App, i: usize, hits: &mut HitMap) {
     }
     row.push((" ⟳ Check ", Action::Check(Some(i))));
     if app.web {
-        row.push((" ⇱ Mouse libre ", Action::FreeMouse));
+        row.push((" ⇱ Mouse ", Action::FreeMouse));
     }
+    row.push((" ⋯ ", Action::MenuGo(Screen::Service(i))));
     row.push((" ✕ ", Action::Close));
     button_row(f, buttons, app, &row, hits);
+}
+
+/// Cajón lateral en pantallas anchas; hoja a pantalla completa en el celular
+/// o en modo táctil, con filas más altas.
+fn draw_menu(f: &mut Frame, app: &App, m: &MenuState, hits: &mut HitMap) {
+    let t = &app.theme;
+    let screen = f.area();
+    let full = screen.width < NARROW || app.view.touch;
+    let area = if full {
+        screen
+    } else {
+        Rect {
+            width: screen.width.min(36),
+            ..screen
+        }
+    };
+    hits.modal(screen, area);
+    f.render_widget(Clear, area);
+
+    let at_root = m.stack.is_empty() && m.query.is_empty();
+    let heading = if !m.query.is_empty() {
+        " ◄ Resultados ".to_string()
+    } else if at_root {
+        " ≡ Menú ".to_string()
+    } else {
+        format!(" ◄ {} ", menu::title(m.screen(), app))
+    };
+    let block = card(app, Line::styled(heading, Style::new().fg(t.fg).bold()))
+        .title(Line::styled(" ✕ ", t.dim).right_aligned());
+    let inner = block.inner(area).inner(Margin::new(1, 0));
+    f.render_widget(block, area);
+    // Barra de título: tocar a la izquierda vuelve, la ✕ cierra.
+    let top = Rect { height: 1, ..area };
+    hits.push(
+        top,
+        if at_root {
+            Action::Close
+        } else {
+            Action::MenuBack
+        },
+    );
+    hits.push(
+        Rect::new(top.right().saturating_sub(4), top.y, 4, 1),
+        Action::Close,
+    );
+
+    let row_h: u16 = if full { 2 } else { app.view.row_h() };
+    let [search, list] =
+        Layout::vertical([Constraint::Length(row_h), Constraint::Fill(1)]).areas(inner);
+    let query = if m.query.is_empty() {
+        Span::styled("buscar…", t.dim)
+    } else {
+        Span::styled(format!("{}▏", m.query), t.fg)
+    };
+    f.render_widget(
+        Line::from(vec![Span::styled("⌕ ", t.accent), query]),
+        Rect {
+            height: 1,
+            ..search
+        },
+    );
+
+    let items = m.items(app);
+    if items.is_empty() {
+        f.render_widget(Line::styled("sin resultados", t.dim), list);
+    }
+    let visible = (list.height / row_h).max(1) as usize;
+    hits.menu_rows = visible;
+    let max = items.len().saturating_sub(visible);
+    let scroll = m.scroll.min(max);
+    for (row, (k, item)) in items
+        .iter()
+        .enumerate()
+        .skip(scroll)
+        .take(visible)
+        .enumerate()
+    {
+        let y = list.y + row as u16 * row_h;
+        let line = Rect::new(list.x, y, list.width, 1);
+        if k == m.sel {
+            f.buffer_mut().set_style(line, Style::new().bg(t.border));
+        }
+        let icon_color = match item.icon {
+            "✗" => t.err,
+            "●" => t.ok,
+            _ => t.accent,
+        };
+        f.render_widget(
+            Line::from(vec![
+                Span::styled(format!("{} ", item.icon), icon_color),
+                Span::styled(item.label.as_str(), t.fg),
+            ]),
+            line,
+        );
+        let right = match (item.on, &item.badge) {
+            (Some(true), _) => Span::styled("● sí", t.ok),
+            (Some(false), _) => Span::styled("○ no", t.dim),
+            (None, Some(b)) if item.is_submenu() => Span::styled(format!("{b} ▸"), t.dim),
+            (None, Some(b)) => Span::styled(b.as_str(), t.dim),
+            (None, None) if item.is_submenu() => Span::styled("▸", t.dim),
+            _ => Span::raw(""),
+        };
+        f.render_widget(Line::from(right).right_aligned(), line);
+        hits.push(
+            Rect::new(list.x, y, list.width, row_h.min(list.bottom() - y)),
+            item.action,
+        );
+    }
+    hits.scroll(list, MENU_SCROLL, max);
 }
 
 fn draw_help(f: &mut Frame, app: &App, hits: &mut HitMap) {
@@ -437,6 +571,7 @@ fn draw_help(f: &mut Frame, app: &App, hits: &mut HitMap) {
     };
     let lines = vec![
         Line::styled("Toque / mouse", Style::new().fg(t.dim).bold()),
+        item("≡", "menú: servicios, vista, ajustes, búsqueda"),
         item("servicio", "abre el detalle con gráfica y link"),
         item("↗", "abre el recurso monitoreado"),
         item("título panel", "zoom a pantalla completa"),
@@ -446,6 +581,7 @@ fn draw_help(f: &mut Frame, app: &App, hits: &mut HitMap) {
         item("fuera", "cierra el popup"),
         Line::raw(""),
         Line::styled("Teclado", Style::new().fg(t.dim).bold()),
+        item("Espacio  :", "menú (escribe para buscar)"),
         item("Tab 1-9", "páginas"),
         item("h l  ← →", "panel anterior / siguiente"),
         item("j k  ↑ ↓", "scroll · Enter/z zoom"),

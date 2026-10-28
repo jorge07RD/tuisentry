@@ -1,23 +1,42 @@
 mod app;
 mod checks;
 mod config;
+mod engine;
 mod input;
 mod links;
+mod menu;
 mod panels;
+mod prefs;
 mod store;
 mod theme;
 mod ui;
+mod view;
 
-use std::{io::stdout, path::PathBuf, time::Duration};
+use std::{
+    io::stdout,
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use anyhow::{Context, Result, bail};
-use ratatui::crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture},
-    execute,
+use ratatui::{
+    DefaultTerminal,
+    crossterm::{
+        event::{self, DisableMouseCapture, EnableMouseCapture},
+        execute,
+    },
 };
 use tokio::sync::mpsc;
 
-use crate::{app::App, config::Config, input::HitMap};
+use crate::{
+    app::{App, Effect},
+    config::Config,
+    input::HitMap,
+};
 
 const EXAMPLE: &str = include_str!("../config.example.toml");
 const USAGE: &str = "\
@@ -124,9 +143,8 @@ async fn main() -> Result<()> {
         return once(&cfg).await;
     }
 
-    let start = tokio::time::Instant::now();
-    let (tx, mut samples) = mpsc::unbounded_channel();
-    let mut app = App::new(&cfg, args.web, start, tx)?;
+    let mut backend = engine::local(args.config.clone())?;
+    let mut app = App::new(cfg, args.config.clone(), args.web, backend.cmd.clone());
 
     let mut terminal = ratatui::init();
     execute!(stdout(), EnableMouseCapture)?;
@@ -136,15 +154,31 @@ async fn main() -> Result<()> {
         hook(info);
     }));
 
-    // crossterm bloquea al leer; un hilo aparte reenvía los eventos.
+    // crossterm bloquea al leer; un hilo aparte reenvía los eventos. `reading`
+    // lo pausa mientras otro programa (el $EDITOR) usa la terminal.
+    let reading = Arc::new(AtomicBool::new(true));
     let (ev_tx, mut events) = mpsc::unbounded_channel();
-    std::thread::spawn(move || {
-        while let Ok(ev) = event::read() {
-            if ev_tx.send(ev).is_err() {
-                break;
+    {
+        let reading = reading.clone();
+        std::thread::spawn(move || {
+            loop {
+                if !reading.load(Ordering::Relaxed) {
+                    std::thread::sleep(Duration::from_millis(50));
+                    continue;
+                }
+                match event::poll(Duration::from_millis(100)) {
+                    Ok(true) => {
+                        let Ok(ev) = event::read() else { break };
+                        if ev_tx.send(ev).is_err() {
+                            break;
+                        }
+                    }
+                    Ok(false) => {}
+                    Err(_) => break,
+                }
             }
-        }
-    });
+        });
+    }
 
     // Refresco para que las gráficas avancen y caduquen los toasts.
     let mut tick = tokio::time::interval(Duration::from_secs(1));
@@ -159,18 +193,29 @@ async fn main() -> Result<()> {
 
         tokio::select! {
             Some(ev) = events.recv() => app.on_event(ev),
-            Some((i, s)) = samples.recv() => app.record(i, s),
+            Some(ev) = backend.events.recv() => app.on_engine(ev),
             _ = tick.tick() => {}
         }
         // Agrupa lo que haya llegado mientras tanto en un solo redibujo.
         while let Ok(ev) = events.try_recv() {
             app.on_event(ev);
         }
-        while let Ok((i, s)) = samples.try_recv() {
-            app.record(i, s);
+        while let Ok(ev) = backend.events.try_recv() {
+            app.on_engine(ev);
         }
         if app.quit {
             break Ok(());
+        }
+        for effect in std::mem::take(&mut app.effects) {
+            match effect {
+                Effect::EditConfig => {
+                    if let Err(e) = edit_config(&app.cfg_path, &mut terminal, &reading) {
+                        app.toast(format!("no pude abrir el editor: {e}"));
+                    }
+                    mouse_on = true;
+                    app.reload();
+                }
+            }
         }
 
         let want = app.mouse_wanted();
@@ -187,4 +232,28 @@ async fn main() -> Result<()> {
     execute!(stdout(), DisableMouseCapture)?;
     ratatui::restore();
     result
+}
+
+/// Suspende la TUI, abre la config en `$VISUAL`/`$EDITOR` (o nano) y la restaura.
+fn edit_config(path: &Path, terminal: &mut DefaultTerminal, reading: &AtomicBool) -> Result<()> {
+    reading.store(false, Ordering::Relaxed);
+    // Da tiempo al hilo lector a salir de su `poll`.
+    std::thread::sleep(Duration::from_millis(150));
+    execute!(stdout(), DisableMouseCapture)?;
+    ratatui::restore();
+
+    let editor = std::env::var("VISUAL")
+        .or_else(|_| std::env::var("EDITOR"))
+        .unwrap_or_else(|_| "nano".into());
+    // Vía sh para admitir editores con argumentos, p. ej. "code --wait".
+    let status = std::process::Command::new("sh")
+        .args(["-c", &format!("{editor} \"$1\""), "sh"])
+        .arg(path)
+        .status();
+
+    *terminal = ratatui::init();
+    execute!(stdout(), EnableMouseCapture)?;
+    reading.store(true, Ordering::Relaxed);
+    status?;
+    Ok(())
 }

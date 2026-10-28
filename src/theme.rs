@@ -19,6 +19,8 @@ const fn hex(c: u32) -> Color {
 }
 
 impl Theme {
+    pub const NAMES: [&str; 3] = ["tokyonight", "catppuccin", "gruvbox"];
+
     pub fn by_name(name: Option<&str>) -> Self {
         match name.unwrap_or("tokyonight") {
             "catppuccin" => Self {

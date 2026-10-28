@@ -7,7 +7,6 @@ use crate::input::{Action, HitMap};
 pub struct Gauge {
     pub title: String,
     pub ids: Vec<usize>,
-    pub row_h: u16,
 }
 
 impl Panel for Gauge {
@@ -17,24 +16,24 @@ impl Panel for Gauge {
 
     fn render(&self, f: &mut Frame, area: Rect, ctx: &Ctx, hits: &mut HitMap) -> usize {
         let t = &ctx.app.theme;
-        let visible = (area.height / self.row_h).max(1) as usize;
-        let max = self.ids.len().saturating_sub(visible);
-        let name_w = self
-            .ids
+        let ids = ctx.ids(&self.ids);
+        let row_h = ctx.row_h();
+        let visible = (area.height / row_h).max(1) as usize;
+        let max = ids.len().saturating_sub(visible);
+        let name_w = ids
             .iter()
-            .map(|&i| ctx.app.services[i].name.len())
+            .map(|&i| ctx.app.services[i].name.chars().count())
             .max()
             .unwrap_or(0);
 
-        for (row, &i) in self
-            .ids
+        for (row, &i) in ids
             .iter()
             .skip(ctx.scroll.min(max))
             .take(visible)
             .enumerate()
         {
             let svc = &ctx.app.services[i];
-            let y = area.y + row as u16 * self.row_h;
+            let y = area.y + row as u16 * row_h;
             let r = Rect::new(area.x, y, area.width, 1);
             let up = svc.history.uptime();
             let color = match up {
@@ -55,7 +54,7 @@ impl Panel for Gauge {
             f.render_widget(gauge, r);
             hits.push(
                 Rect {
-                    height: self.row_h.min(area.bottom() - y),
+                    height: row_h.min(area.bottom() - y),
                     ..r
                 },
                 Action::Select(i),

@@ -17,10 +17,27 @@ use crate::{
 
 pub struct Ctx<'a> {
     pub app: &'a App,
-    /// Segundos desde el arranque.
+    /// Segundos unix.
     pub now: f64,
     /// Desplazamiento pedido por el usuario; el panel lo acota.
     pub scroll: usize,
+}
+
+impl Ctx<'_> {
+    /// Servicios del panel tras aplicar el filtro y el orden de la vista.
+    pub fn ids(&self, ids: &[usize]) -> Vec<usize> {
+        self.app.view.apply(ids, &self.app.services)
+    }
+
+    /// Alto de fila: 2 en modo táctil para que el dedo acierte.
+    pub fn row_h(&self) -> u16 {
+        self.app.view.row_h()
+    }
+
+    /// Ventana de la vista si está fijada; si no, la del panel.
+    pub fn window(&self, panel: f64) -> f64 {
+        self.app.view.window.unwrap_or(panel)
+    }
 }
 
 pub trait Panel {
@@ -31,7 +48,7 @@ pub trait Panel {
 }
 
 /// Registro de tipos de panel por `kind`.
-pub fn build(cfg: &PanelCfg, services: &[Service], web: bool) -> Result<Box<dyn Panel>> {
+pub fn build(cfg: &PanelCfg, services: &[Service]) -> Result<Box<dyn Panel>> {
     let numeric = matches!(cfg.kind.as_str(), "chart" | "spark");
     let ids = resolve(cfg, services, numeric);
     let title = |default: &str| cfg.title.clone().unwrap_or_else(|| default.into());
@@ -39,13 +56,10 @@ pub fn build(cfg: &PanelCfg, services: &[Service], web: bool) -> Result<Box<dyn 
         Some(w) => parse_duration(w)?.as_secs_f64(),
         None => 15.0 * 60.0,
     };
-    // En el celular las filas llevan aire para que el dedo acierte.
-    let row_h = if web { 2 } else { 1 };
     Ok(match cfg.kind.as_str() {
         "status" => Box::new(status::Status {
             title: title("Servicios"),
             ids,
-            row_h,
         }),
         "chart" => Box::new(chart::Chart {
             title: title("Latencia"),
@@ -55,12 +69,10 @@ pub fn build(cfg: &PanelCfg, services: &[Service], web: bool) -> Result<Box<dyn 
         "spark" => Box::new(spark::Spark {
             title: title("Tendencia"),
             ids,
-            row_h,
         }),
         "gauge" => Box::new(gauge::Gauge {
             title: title("Uptime"),
             ids,
-            row_h,
         }),
         other => bail!("panel desconocido {other:?} (status, chart, spark, gauge)"),
     })

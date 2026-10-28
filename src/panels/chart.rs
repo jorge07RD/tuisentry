@@ -30,7 +30,7 @@ impl Panel for Chart {
         let [legend, body] =
             Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
         draw_legend(f, legend, &self.ids, ctx, hits);
-        draw(f, body, &self.ids, self.window, ctx, hits);
+        draw(f, body, &self.ids, ctx.window(self.window), ctx, hits);
         0
     }
 }

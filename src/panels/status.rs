@@ -12,7 +12,6 @@ use crate::input::{Action, HitMap};
 pub struct Status {
     pub title: String,
     pub ids: Vec<usize>,
-    pub row_h: u16,
 }
 
 impl Panel for Status {
@@ -22,16 +21,22 @@ impl Panel for Status {
 
     fn render(&self, f: &mut Frame, area: Rect, ctx: &Ctx, hits: &mut HitMap) -> usize {
         let t = &ctx.app.theme;
-        let visible = (area.height / self.row_h).max(1) as usize;
-        let max = self.ids.len().saturating_sub(visible);
+        let ids = ctx.ids(&self.ids);
+        let row_h = ctx.row_h();
+        let visible = (area.height / row_h).max(1) as usize;
+        let max = ids.len().saturating_sub(visible);
         let scroll = ctx.scroll.min(max);
         let show_uptime = area.width >= 36;
 
-        for (row, &i) in self.ids.iter().skip(scroll).take(visible).enumerate() {
+        if ids.is_empty() && ctx.app.view.down_only {
+            f.render_widget(Line::styled("✓ nada caído", t.ok).centered(), area);
+        }
+
+        for (row, &i) in ids.iter().skip(scroll).take(visible).enumerate() {
             let svc = &ctx.app.services[i];
-            let y = area.y + row as u16 * self.row_h;
+            let y = area.y + row as u16 * row_h;
             let line = Rect::new(area.x, y, area.width, 1);
-            let touch = Rect::new(area.x, y, area.width, self.row_h.min(area.bottom() - y));
+            let touch = Rect::new(area.x, y, area.width, row_h.min(area.bottom() - y));
             let selected = ctx.app.selected == Some(i);
             if selected {
                 f.buffer_mut().set_style(line, Style::new().bg(t.surface));
@@ -39,6 +44,7 @@ impl Panel for Status {
 
             let up = svc.is_up();
             let (dot, color) = match up {
+                _ if svc.paused => ("◌", t.dim),
                 Some(true) => ("●", t.ok),
                 Some(false) => ("●", t.err),
                 None => ("○", t.dim),

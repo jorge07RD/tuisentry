@@ -43,6 +43,7 @@ tuisentry --once          # ejecuta cada check una vez y sale (útil en scripts/
 
 | Toque / clic       | Hace                                      |
 |--------------------|-------------------------------------------|
+| `≡` arriba         | menú: servicios, vista, ajustes y búsqueda |
 | un servicio        | abre el detalle: gráfica, stats y link    |
 | `↗`                | abre el recurso monitoreado               |
 | título de un panel | zoom a pantalla completa (otra vez: sale) |
@@ -51,10 +52,22 @@ tuisentry --once          # ejecuta cada check una vez y sale (útil en scripts/
 | arrastrar / rueda  | desplaza la lista                         |
 | `⟳` `?` `✕`        | re-check de todo · ayuda · salir          |
 
-Teclado opcional: `Tab`/`1-9` páginas, `h`/`l` paneles, `j`/`k` scroll,
-`Enter` zoom, `r` re-check, `o` abrir link, `m` mouse libre, `Esc`, `q`.
+Teclado opcional: `Espacio`/`:` menú (escribe para buscar cualquier acción o
+servicio), `Tab`/`1-9` páginas, `h`/`l` paneles, `j`/`k` scroll, `Enter` zoom,
+`r` re-check, `o` abrir link, `m` mouse libre, `Esc`, `q`.
 
 Con menos de 100 columnas se muestra un panel a la vez, pensado para el celular.
+
+### Menú
+
+| Sección   | Qué tiene                                                              |
+|-----------|------------------------------------------------------------------------|
+| Servicios | comprobar todo · pausar/reanudar todo · por servicio: detalle, abrir, copiar URL, comprobar, pausar |
+| Vista     | ventana de tiempo (5m–24h) · ordenar (config, nombre, estado, latencia) · solo caídos · filas táctiles |
+| Ajustes   | tema · recargar config · editar config en `$EDITOR`                      |
+
+Las preferencias (tema, vista, servicios pausados) se guardan en
+`~/.local/state/tuisentry/`.
 
 ## Desde el celular (navegador)
 

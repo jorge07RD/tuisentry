@@ -3,6 +3,11 @@ use ratatui::{
     style::Color,
 };
 
+use crate::{menu::Screen, view::Sort};
+
+/// Identificador de scroll del menú en el `HitMap` (los paneles usan su índice).
+pub const MENU_SCROLL: usize = usize::MAX;
+
 /// Todo lo que se puede hacer con un toque, un clic o una tecla.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
@@ -12,8 +17,12 @@ pub enum Action {
     Zoom(usize),
     Select(usize),
     OpenLink(usize),
+    CopyUrl(usize),
     /// `None` = todos los servicios.
     Check(Option<usize>),
+    TogglePause(usize),
+    /// Pausa todo, o reanuda todo si ya estaba todo pausado.
+    PauseAll,
     Help,
     Close,
     /// Suelta el mouse unos segundos para tocar o seleccionar links en la terminal web.
@@ -21,6 +30,18 @@ pub enum Action {
     Quit,
     /// Área que absorbe clics sin hacer nada (cuerpo de un popup).
     Block,
+    /// Abre o cierra el menú.
+    Menu,
+    MenuBack,
+    MenuGo(Screen),
+    /// Segundos; 0 = la ventana propia de cada panel.
+    SetWindow(u32),
+    SetSort(Sort),
+    ToggleDownOnly,
+    ToggleTouch,
+    SetTheme(u8),
+    Reload,
+    EditConfig,
 }
 
 /// Texto que, tras dibujar, se reescribe como hipervínculo OSC 8.
@@ -38,6 +59,8 @@ pub struct HitMap {
     hits: Vec<(Rect, Action)>,
     /// (área, índice de panel, scroll máximo)
     scrolls: Vec<(Rect, usize, usize)>,
+    /// Filas de entradas que caben en el menú (para mantener la selección a la vista).
+    pub menu_rows: usize,
     pub links: Vec<LinkSpan>,
 }
 

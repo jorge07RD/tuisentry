@@ -12,7 +12,6 @@ use crate::input::{Action, HitMap};
 pub struct Spark {
     pub title: String,
     pub ids: Vec<usize>,
-    pub row_h: u16,
 }
 
 impl Panel for Spark {
@@ -22,18 +21,19 @@ impl Panel for Spark {
 
     fn render(&self, f: &mut Frame, area: Rect, ctx: &Ctx, hits: &mut HitMap) -> usize {
         let t = &ctx.app.theme;
-        let block_h = 2 + self.row_h - 1;
+        let ids = ctx.ids(&self.ids);
+        let block_h = 1 + ctx.row_h();
         let visible = (area.height / block_h).max(1) as usize;
-        let max = self.ids.len().saturating_sub(visible);
+        let max = ids.len().saturating_sub(visible);
 
-        for (row, (k, &i)) in self
-            .ids
+        for (row, &i) in ids
             .iter()
-            .enumerate()
             .skip(ctx.scroll.min(max))
             .take(visible)
             .enumerate()
         {
+            // El color sigue al servicio aunque cambie el orden.
+            let k = self.ids.iter().position(|&x| x == i).unwrap_or(0);
             let svc = &ctx.app.services[i];
             let y = area.y + row as u16 * block_h;
             if y + 2 > area.bottom() {

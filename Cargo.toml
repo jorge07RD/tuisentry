@@ -17,9 +17,11 @@ dirs = "7.0.0"
 ratatui = "0.30.2"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "http2"] }
 serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
 surge-ping = "0.9.1"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time", "net", "process", "sync"] }
 toml = "1.1.8"
+toml_edit = "0.25.17"
 x509-parser = "0.18.1"
 
 [profile.release]

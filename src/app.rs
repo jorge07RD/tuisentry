@@ -1,27 +1,30 @@
 use std::{
-    sync::Arc,
+    path::PathBuf,
     time::{Duration, Instant},
 };
 
-use anyhow::Result;
 use ratatui::crossterm::event::{
-    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
+    MouseEventKind,
 };
-use tokio::sync::{Notify, mpsc};
+use tokio::sync::mpsc;
 
 use crate::{
-    checks,
     config::Config,
-    input::{Action, HitMap},
+    engine::{Command, Event, ServiceInfo},
+    input::{Action, HitMap, MENU_SCROLL},
     links,
-    panels::{self, Panel},
-    store::{History, Sample},
+    menu::MenuState,
+    panels::{self, Panel, fmt_span},
+    prefs::UiPrefs,
+    store::{History, unix_now},
     theme::Theme,
+    view::View,
 };
 
-/// Muestras guardadas por servicio (~5 h a 30 s, ~10 min a 1 s).
-const HISTORY: usize = 600;
 const FREE_MOUSE: Duration = Duration::from_secs(10);
+/// Muestras que la UI guarda por servicio (las mismas que el motor).
+const HISTORY: usize = 600;
 
 pub struct Service {
     pub name: String,
@@ -30,13 +33,50 @@ pub struct Service {
     pub host: Option<String>,
     pub link: Option<String>,
     pub suffix: String,
+    pub paused: bool,
+    pub muted: bool,
     pub history: History,
-    notify: Arc<Notify>,
 }
 
 impl Service {
+    #[cfg(test)]
+    pub fn new(name: &str) -> Self {
+        Self {
+            name: name.into(),
+            kind: String::new(),
+            target: None,
+            host: None,
+            link: None,
+            suffix: "ms".into(),
+            paused: false,
+            muted: false,
+            history: History::new(HISTORY),
+        }
+    }
+
+    fn from_info(info: ServiceInfo) -> Self {
+        let mut history = History::new(HISTORY);
+        for s in info.history {
+            history.push(s);
+        }
+        Self {
+            name: info.name,
+            kind: info.kind,
+            target: info.target,
+            host: info.host,
+            link: info.link,
+            suffix: info.suffix,
+            paused: info.paused,
+            muted: info.muted,
+            history,
+        }
+    }
+
     /// Último valor formateado (latencia, métrica o estado).
     pub fn value_label(&self) -> String {
+        if self.paused {
+            return "pausado".into();
+        }
         match self.history.last() {
             None => "…".into(),
             Some(s) => match s.value {
@@ -69,21 +109,33 @@ pub struct Page {
     pub scroll: Vec<usize>,
 }
 
+/// Lo que solo puede hacer `main`, porque necesita la terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Effect {
+    EditConfig,
+}
+
 pub struct App {
+    pub cfg: Config,
+    pub cfg_path: PathBuf,
     pub services: Vec<Service>,
     pub pages: Vec<Page>,
     pub page: usize,
     pub zoom: Option<usize>,
     pub selected: Option<usize>,
     pub help: bool,
+    pub menu: Option<MenuState>,
+    pub view: View,
+    pub theme: Theme,
+    pub theme_name: String,
     pub toast: Option<(String, Instant)>,
     pub web: bool,
-    pub theme: Theme,
     pub quit: bool,
     /// Mientras sea futuro, la captura de mouse está apagada.
     pub mouse_free_until: Option<Instant>,
     pub hits: HitMap,
-    start: Instant,
+    pub effects: Vec<Effect>,
+    cmd: mpsc::UnboundedSender<Command>,
     /// Dónde empezó el toque/clic actual y la última fila vista al arrastrar.
     press: Option<(u16, u16)>,
     drag_y: u16,
@@ -91,75 +143,103 @@ pub struct App {
 
 impl App {
     pub fn new(
-        cfg: &Config,
+        cfg: Config,
+        cfg_path: PathBuf,
         web: bool,
-        start: tokio::time::Instant,
-        tx: mpsc::UnboundedSender<(usize, Sample)>,
-    ) -> Result<Self> {
-        let mut services = Vec::with_capacity(cfg.services.len());
-        for (i, sc) in cfg.services.iter().enumerate() {
-            let check: Arc<dyn checks::Check> = checks::build(sc, cfg)?.into();
-            let notify = Arc::new(Notify::new());
-            services.push(Service {
-                name: sc.name.clone(),
-                kind: sc.kind.clone(),
-                target: sc
-                    .target
-                    .clone()
-                    .or_else(|| sc.unit.clone())
-                    .or_else(|| sc.command.clone()),
-                host: sc.host.clone(),
-                link: sc.link.clone().or_else(|| check.default_link()),
-                suffix: sc
-                    .suffix
-                    .clone()
-                    .unwrap_or_else(|| check.default_suffix().into()),
-                history: History::new(HISTORY),
-                notify: notify.clone(),
-            });
-            checks::spawn(i, check, sc, notify, start, tx.clone());
-        }
-        let mut pages = Vec::with_capacity(cfg.pages.len());
-        for p in &cfg.pages {
-            let panels = p
-                .panels
-                .iter()
-                .map(|pc| panels::build(pc, &services, web))
-                .collect::<Result<Vec<_>>>()?;
-            pages.push(Page {
-                title: p.title.clone(),
-                scroll: vec![0; panels.len()],
-                panels,
-                focus: 0,
-            });
-        }
-        Ok(Self {
-            services,
-            pages,
+        cmd: mpsc::UnboundedSender<Command>,
+    ) -> Self {
+        let prefs = UiPrefs::load();
+        let theme_name = prefs
+            .theme
+            .or_else(|| cfg.theme.name.clone())
+            .filter(|n| Theme::NAMES.contains(&n.as_str()))
+            .unwrap_or_else(|| Theme::NAMES[0].into());
+        let mut app = Self {
+            cfg,
+            cfg_path,
+            services: vec![],
+            pages: vec![],
             page: 0,
             zoom: None,
             selected: None,
             help: false,
+            menu: None,
+            view: prefs.view.unwrap_or_else(|| View::new(web)),
+            theme: Theme::by_name(Some(&theme_name)),
+            theme_name,
             toast: None,
             web,
-            theme: Theme::by_name(cfg.theme.name.as_deref()),
             quit: false,
             mouse_free_until: None,
             hits: HitMap::default(),
-            start: start.into_std(),
+            effects: vec![],
+            cmd,
             press: None,
             drag_y: 0,
-        })
+        };
+        app.build_pages();
+        app
     }
 
-    /// Segundos desde el arranque, en la misma escala que `Sample::at`.
+    /// Reconstruye las páginas a partir de la config y los servicios actuales,
+    /// conservando la página, el foco y el scroll si siguen existiendo.
+    fn build_pages(&mut self) {
+        let old: Vec<(usize, Vec<usize>)> = self
+            .pages
+            .iter()
+            .map(|p| (p.focus, p.scroll.clone()))
+            .collect();
+        self.pages = self
+            .cfg
+            .pages
+            .iter()
+            .enumerate()
+            .map(|(pi, p)| {
+                let panels: Vec<_> = p
+                    .panels
+                    .iter()
+                    .filter_map(|pc| panels::build(pc, &self.services).ok())
+                    .collect();
+                let (focus, mut scroll) = old.get(pi).cloned().unwrap_or_default();
+                scroll.resize(panels.len(), 0);
+                Page {
+                    title: p.title.clone(),
+                    focus: focus.min(panels.len().saturating_sub(1)),
+                    scroll,
+                    panels,
+                }
+            })
+            .collect();
+        self.page = self.page.min(self.pages.len().saturating_sub(1));
+        self.zoom = self
+            .zoom
+            .filter(|&z| z < self.pages[self.page].panels.len());
+    }
+
+    /// Segundos unix, la escala de `Sample::at`.
     pub fn now(&self) -> f64 {
-        self.start.elapsed().as_secs_f64()
+        unix_now()
     }
 
-    pub fn record(&mut self, idx: usize, s: Sample) {
-        if let Some(svc) = self.services.get_mut(idx) {
-            svc.history.push(s);
+    pub fn on_engine(&mut self, ev: Event) {
+        match ev {
+            Event::Snapshot(infos) => {
+                self.services = infos.into_iter().map(Service::from_info).collect();
+                self.selected = self.selected.filter(|&i| i < self.services.len());
+                self.build_pages();
+            }
+            Event::Sample(i, s) => {
+                if let Some(svc) = self.services.get_mut(i) {
+                    svc.history.push(s);
+                }
+            }
+            Event::Flags { idx, paused, muted } => {
+                if let Some(svc) = self.services.get_mut(idx) {
+                    svc.paused = paused;
+                    svc.muted = muted;
+                }
+            }
+            Event::Toast(msg) => self.toast(msg),
         }
     }
 
@@ -173,6 +253,31 @@ impl App {
 
     pub fn toast(&mut self, msg: impl Into<String>) {
         self.toast = Some((msg.into(), Instant::now()));
+    }
+
+    fn send(&mut self, c: Command) {
+        if self.cmd.send(c).is_err() {
+            self.toast("el motor no responde");
+        }
+    }
+
+    fn save_prefs(&self) {
+        UiPrefs {
+            theme: Some(self.theme_name.clone()),
+            view: Some(self.view.clone()),
+        }
+        .save();
+    }
+
+    /// Valida la config en disco; si está bien, la aplica y pide al motor que recargue.
+    pub fn reload(&mut self) {
+        match Config::load(&self.cfg_path) {
+            Ok(cfg) => {
+                self.cfg = cfg;
+                self.send(Command::Reload);
+            }
+            Err(e) => self.toast(format!("config inválida: {e:#}")),
+        }
     }
 
     pub fn apply(&mut self, a: Action) {
@@ -199,7 +304,10 @@ impl App {
                 self.pages[self.page].focus = i;
                 self.zoom = if self.zoom == Some(i) { None } else { Some(i) };
             }
-            Action::Select(i) => self.selected = Some(i),
+            Action::Select(i) => {
+                self.menu = None;
+                self.selected = Some(i);
+            }
             Action::OpenLink(i) => match self.services[i].link.clone() {
                 Some(url) => {
                     let msg = links::open(&url, self.web);
@@ -207,19 +315,40 @@ impl App {
                 }
                 None => self.toast(format!("{} no tiene link", self.services[i].name)),
             },
-            Action::Check(Some(i)) => {
-                self.services[i].notify.notify_one();
-                self.toast(format!("⟳ comprobando {}", self.services[i].name));
-            }
-            Action::Check(None) => {
-                for s in &self.services {
-                    s.notify.notify_one();
+            Action::CopyUrl(i) => {
+                if let Some(url) = self.services[i].link.clone() {
+                    let msg = links::copy(&url, self.web);
+                    self.toast(msg);
                 }
-                self.toast("⟳ comprobando todo");
             }
-            Action::Help => self.help = !self.help,
+            Action::Check(target) => {
+                self.send(Command::CheckNow(target));
+                match target {
+                    Some(i) => self.toast(format!("⟳ comprobando {}", self.services[i].name)),
+                    None => self.toast("⟳ comprobando todo"),
+                }
+            }
+            Action::TogglePause(i) => {
+                let on = !self.services[i].paused;
+                self.send(Command::SetPaused(Some(i), on));
+            }
+            Action::PauseAll => {
+                let on = !self.services.iter().all(|s| s.paused);
+                self.send(Command::SetPaused(None, on));
+                self.toast(if on {
+                    "‖ todo en pausa"
+                } else {
+                    "▶ todo reanudado"
+                });
+            }
+            Action::Help => {
+                self.menu = None;
+                self.help = !self.help;
+            }
             Action::Close => {
-                if self.help {
+                if self.menu.is_some() {
+                    self.menu = None;
+                } else if self.help {
                     self.help = false;
                 } else if self.selected.is_some() {
                     self.selected = None;
@@ -228,17 +357,80 @@ impl App {
                 }
             }
             Action::FreeMouse => {
+                self.menu = None;
                 self.mouse_free_until = Some(Instant::now() + FREE_MOUSE);
                 self.toast("Mouse libre 10 s: toca o selecciona el link");
             }
             Action::Quit => self.quit = true,
+            Action::Menu => {
+                self.menu = match self.menu {
+                    Some(_) => None,
+                    None => Some(MenuState::default()),
+                };
+            }
+            Action::MenuBack => {
+                if let Some(m) = &mut self.menu {
+                    if !m.query.is_empty() {
+                        m.query.clear();
+                    } else if m.stack.pop().is_none() {
+                        self.menu = None;
+                    }
+                    if let Some(m) = &mut self.menu {
+                        m.scroll = 0;
+                        m.sel = 0;
+                    }
+                }
+            }
+            Action::MenuGo(s) => {
+                // Desde fuera del menú (p. ej. el detalle) se abre directo en esa pantalla.
+                self.selected = None;
+                match &mut self.menu {
+                    Some(m) => {
+                        m.stack.push(s);
+                        m.query.clear();
+                        m.scroll = 0;
+                        m.sel = 0;
+                    }
+                    None => self.menu = Some(MenuState::at(s)),
+                }
+            }
+            Action::SetWindow(secs) => {
+                self.view.window = (secs > 0).then_some(f64::from(secs));
+                self.save_prefs();
+                let label = self.view.window.map_or("la de cada panel".into(), fmt_span);
+                self.toast(format!("ventana: {label}"));
+            }
+            Action::SetSort(s) => {
+                self.view.sort = s;
+                self.save_prefs();
+            }
+            Action::ToggleDownOnly => {
+                self.view.down_only = !self.view.down_only;
+                self.save_prefs();
+            }
+            Action::ToggleTouch => {
+                self.view.touch = !self.view.touch;
+                self.save_prefs();
+            }
+            Action::SetTheme(i) => {
+                if let Some(&name) = Theme::NAMES.get(usize::from(i)) {
+                    self.theme_name = name.into();
+                    self.theme = Theme::by_name(Some(name));
+                    self.save_prefs();
+                }
+            }
+            Action::Reload => self.reload(),
+            Action::EditConfig => {
+                self.menu = None;
+                self.effects.push(Effect::EditConfig);
+            }
         }
     }
 
-    pub fn on_event(&mut self, ev: Event) {
+    pub fn on_event(&mut self, ev: TermEvent) {
         match ev {
-            Event::Key(k) if k.kind == KeyEventKind::Press => self.on_key(k),
-            Event::Mouse(m) => self.on_mouse(m),
+            TermEvent::Key(k) if k.kind == KeyEventKind::Press => self.on_key(k),
+            TermEvent::Mouse(m) => self.on_mouse(m),
             _ => {}
         }
     }
@@ -246,11 +438,17 @@ impl App {
     fn on_key(&mut self, k: KeyEvent) {
         // Cualquier tecla devuelve el mouse a la app.
         self.mouse_free_until = None;
+        if k.code == KeyCode::Char('c') && k.modifiers.contains(KeyModifiers::CONTROL) {
+            return self.apply(Action::Quit);
+        }
+        if self.menu.is_some() {
+            return self.menu_key(k);
+        }
         let a = match k.code {
-            KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => Action::Quit,
             KeyCode::Char('q') => Action::Quit,
             KeyCode::Esc => Action::Close,
             KeyCode::Char('?') => Action::Help,
+            KeyCode::Char(' ' | ':') => Action::Menu,
             KeyCode::Tab => Action::Page((self.page + 1) % self.pages.len()),
             KeyCode::BackTab => Action::Page((self.page + self.pages.len() - 1) % self.pages.len()),
             KeyCode::Char(c @ '1'..='9') => Action::Page(c as usize - '1' as usize),
@@ -268,6 +466,45 @@ impl App {
             _ => return,
         };
         self.apply(a);
+    }
+
+    /// Con el menú abierto el teclado escribe en la búsqueda.
+    fn menu_key(&mut self, k: KeyEvent) {
+        let items = match &self.menu {
+            Some(m) => m.items(self),
+            None => return,
+        };
+        let visible = self.hits.menu_rows.max(1);
+        let Some(m) = &mut self.menu else { return };
+        match k.code {
+            KeyCode::Esc => return self.apply(Action::MenuBack),
+            KeyCode::Backspace if m.query.is_empty() => return self.apply(Action::MenuBack),
+            KeyCode::Backspace => {
+                m.query.pop();
+                m.sel = 0;
+                m.scroll = 0;
+            }
+            KeyCode::Down => m.sel = (m.sel + 1).min(items.len().saturating_sub(1)),
+            KeyCode::Up => m.sel = m.sel.saturating_sub(1),
+            KeyCode::Enter => {
+                if let Some(item) = items.get(m.sel) {
+                    let a = item.action;
+                    return self.apply(a);
+                }
+            }
+            KeyCode::Char(c) => {
+                m.query.push(c);
+                m.sel = 0;
+                m.scroll = 0;
+            }
+            _ => {}
+        }
+        // Mantiene la selección a la vista.
+        if m.sel < m.scroll {
+            m.scroll = m.sel;
+        } else if m.sel >= m.scroll + visible {
+            m.scroll = m.sel + 1 - visible;
+        }
     }
 
     fn on_mouse(&mut self, m: MouseEvent) {
@@ -301,10 +538,18 @@ impl App {
     }
 
     fn scroll_at(&mut self, x: u16, y: u16, delta: i32) {
-        if let Some((panel, max)) = self.hits.scroll_at(x, y) {
-            let s = &mut self.pages[self.page].scroll[panel];
-            *s = (*s as i32 + delta).clamp(0, max as i32) as usize;
-        }
+        let Some((target, max)) = self.hits.scroll_at(x, y) else {
+            return;
+        };
+        let s = if target == MENU_SCROLL {
+            match &mut self.menu {
+                Some(m) => &mut m.scroll,
+                None => return,
+            }
+        } else {
+            &mut self.pages[self.page].scroll[target]
+        };
+        *s = (*s as i32 + delta).clamp(0, max as i32) as usize;
     }
 
     fn scroll_focused(&mut self, delta: i32) {
@@ -314,11 +559,40 @@ impl App {
             *s = (*s as i32 + delta).clamp(0, max as i32) as usize;
         }
     }
+
+    /// Abre el menú en una pantalla concreta (para tests y atajos).
+    #[cfg(test)]
+    pub fn open_menu(&mut self, s: crate::menu::Screen) {
+        self.menu = Some(MenuState::at(s));
+    }
+}
+
+/// Construye una `App` sin motor, con servicios ya cargados (tests).
+#[cfg(test)]
+pub fn test_app(services: Vec<Service>) -> App {
+    let cfg: Config = toml::from_str(
+        r#"
+        [[service]]
+        name = "x"
+        kind = "tcp"
+        target = "localhost:1"
+        [[page]]
+        title = "p"
+        [[page.panel]]
+        kind = "status"
+        "#,
+    )
+    .unwrap();
+    let (cmd, _rx) = mpsc::unbounded_channel();
+    let mut app = App::new(cfg, PathBuf::new(), false, cmd);
+    app.services = services;
+    app
 }
 
 #[cfg(test)]
 mod tests {
-    use super::fmt_value;
+    use super::*;
+    use crate::menu::Screen;
 
     #[test]
     fn values() {
@@ -327,5 +601,32 @@ mod tests {
         assert_eq!(fmt_value(0.5, "ms"), "0.5 ms");
         assert_eq!(fmt_value(73.0, "%"), "73%");
         assert_eq!(fmt_value(0.75, ""), "0.8");
+    }
+
+    #[test]
+    fn menu_navigation_and_search() {
+        let mut app = test_app(vec![
+            Service::new("chelitonegro"),
+            Service::new("portafolio"),
+        ]);
+        app.apply(Action::Menu);
+        app.apply(Action::MenuGo(Screen::View));
+        assert_eq!(app.menu.as_ref().unwrap().screen(), Screen::View);
+        app.apply(Action::MenuBack);
+        assert_eq!(app.menu.as_ref().unwrap().screen(), Screen::Root);
+        app.apply(Action::MenuBack);
+        assert!(app.menu.is_none());
+
+        app.open_menu(Screen::Root);
+        app.menu.as_mut().unwrap().query = "porta".into();
+        let found = app.menu.as_ref().unwrap().items(&app);
+        assert!(
+            found
+                .iter()
+                .any(|i| i.action == Action::MenuGo(Screen::Service(1)))
+        );
+        app.menu.as_mut().unwrap().query = "1h".into();
+        let found = app.menu.as_ref().unwrap().items(&app);
+        assert!(found.iter().any(|i| i.action == Action::SetWindow(3600)));
     }
 }

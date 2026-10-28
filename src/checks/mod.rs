@@ -7,17 +7,26 @@ mod ping;
 mod systemd;
 mod tcp;
 
-use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use anyhow::{Result, bail};
 use tokio::{
     sync::{Notify, mpsc},
-    time::{Instant, MissedTickBehavior},
+    task::JoinHandle,
+    time::MissedTickBehavior,
 };
 
 use crate::{
     config::{Config, ServiceCfg, parse_duration},
-    store::Sample,
+    store::{Sample, unix_now},
 };
 
 pub type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -100,16 +109,26 @@ pub fn build(svc: &ServiceCfg, cfg: &Config) -> Result<Box<dyn Check>> {
     })
 }
 
-/// Lanza un bucle por servicio que envía `(índice, muestra)` al canal.
-/// `notify` permite forzar un check inmediato.
+/// Muestra etiquetada con la generación de config que la produjo y el índice
+/// del servicio, para descartar las que lleguen tarde tras una recarga.
+pub type Tagged = (u64, usize, Sample);
+
+/// Controles compartidos con el bucle de un servicio.
+#[derive(Clone, Default)]
+pub struct Ctl {
+    /// Fuerza un check inmediato (también estando en pausa).
+    pub now: Arc<Notify>,
+    pub paused: Arc<AtomicBool>,
+}
+
+/// Lanza el bucle de un servicio. Abortar el `JoinHandle` lo detiene.
 pub fn spawn(
-    idx: usize,
+    (generation, idx): (u64, usize),
     check: Arc<dyn Check>,
     svc: &ServiceCfg,
-    notify: Arc<Notify>,
-    start: Instant,
-    tx: mpsc::UnboundedSender<(usize, Sample)>,
-) {
+    ctl: Ctl,
+    tx: mpsc::UnboundedSender<Tagged>,
+) -> JoinHandle<()> {
     // Ya validados en Config::validate.
     let every = parse_duration(&svc.interval).unwrap_or(Duration::from_secs(30));
     let timeout = parse_duration(&svc.timeout).unwrap_or(Duration::from_secs(10));
@@ -118,24 +137,28 @@ pub fn spawn(
         tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
         loop {
             tokio::select! {
-                _ = tick.tick() => {}
-                _ = notify.notified() => tick.reset(),
+                _ = tick.tick() => {
+                    if ctl.paused.load(Ordering::Relaxed) {
+                        continue;
+                    }
+                }
+                _ = ctl.now.notified() => tick.reset(),
             }
             let out = match tokio::time::timeout(timeout, check.run()).await {
                 Ok(o) => o,
                 Err(_) => Outcome::down(format!("timeout ({}s)", timeout.as_secs())),
             };
             let sample = Sample {
-                at: start.elapsed().as_secs_f64(),
+                at: unix_now(),
                 ok: out.ok,
                 value: out.value,
                 detail: out.detail,
             };
-            if tx.send((idx, sample)).is_err() {
+            if tx.send((generation, idx, sample)).is_err() {
                 break;
             }
         }
-    });
+    })
 }
 
 /// Ejecuta cada check una vez, en paralelo, sin TUI. Devuelve los resultados

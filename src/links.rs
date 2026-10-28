@@ -36,6 +36,28 @@ pub fn open(url: &str, web: bool) -> String {
     }
 }
 
+/// Copia al portapapeles y devuelve el mensaje para el toast. En local usa
+/// `wl-copy` si existe; si no (o en modo web), OSC 52 a través de la terminal.
+pub fn copy(text: &str, web: bool) -> String {
+    if !web
+        && let Ok(mut child) = Command::new("wl-copy")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+    {
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(text.as_bytes());
+        }
+        std::thread::spawn(move || child.wait());
+        return format!("⧉ copiado: {text}");
+    }
+    match copy_osc52(text) {
+        Ok(()) => format!("⧉ copiado: {text}"),
+        Err(e) => format!("no pude copiar: {e}"),
+    }
+}
+
 fn copy_osc52(text: &str) -> io::Result<()> {
     let mut out = io::stdout();
     write!(out, "\x1b]52;c;{}\x07", STANDARD.encode(text))?;
