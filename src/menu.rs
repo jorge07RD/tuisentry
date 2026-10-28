@@ -10,7 +10,7 @@ use crate::{
     store::unix_now,
     text::fold,
     theme::{self, Theme},
-    time::human,
+    time::{ago, human},
     view::Sort,
 };
 
@@ -238,10 +238,9 @@ pub fn items(screen: Screen, app: &App) -> Vec<MenuItem> {
                         .map_or(A::Block, |i| A::MenuGo(Screen::Service(i)));
                     match inc.end {
                         None => MenuItem::new("✗", format!("{} · caído", inc.service), target)
-                            .badge(format!("hace {}", human(now - inc.start))),
-                        Some(end) => MenuItem::new("✓", inc.service.clone(), target).badge(
-                            format!("{} · hace {}", human(end - inc.start), human(now - end)),
-                        ),
+                            .badge(ago(now - inc.start)),
+                        Some(end) => MenuItem::new("✓", inc.service.clone(), target)
+                            .badge(format!("{} · {}", human(end - inc.start), ago(now - end))),
                     }
                 })
                 .collect()

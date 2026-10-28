@@ -681,9 +681,9 @@ fn draw_form(f: &mut Frame, app: &App, form: &Form, hits: &mut HitMap) {
             f.render_widget(Line::styled(fl.help, t.dim).right_aligned(), r);
             hits.push(r, Action::FormFocus(i));
         }
-        let field_bg = Style::new()
-            .fg(t.fg)
-            .bg(if focused { t.border } else { t.surface });
+        // Los campos tienen fondo propio para distinguirse del popup;
+        // el activo lleva además una barra de acento a la izquierda.
+        let field_bg = Style::new().fg(t.fg).bg(t.border);
         match &fl.kind {
             FieldKind::Text | FieldKind::Number => {
                 if let Some(r) = row(1) {
@@ -701,6 +701,12 @@ fn draw_form(f: &mut Frame, app: &App, form: &Form, hits: &mut HitMap) {
                     let chars: Vec<char> = text.chars().collect();
                     let shown: String = chars[chars.len().saturating_sub(w)..].iter().collect();
                     f.render_widget(Span::styled(format!(" {shown}"), field_bg), r);
+                    if focused {
+                        f.render_widget(
+                            Span::styled("▍", Style::new().fg(t.accent).bg(t.border)),
+                            Rect { width: 1, ..r },
+                        );
+                    }
                     hits.push(
                         Rect {
                             y: r.y.saturating_sub(1),
@@ -726,6 +732,12 @@ fn draw_form(f: &mut Frame, app: &App, form: &Form, hits: &mut HitMap) {
                         .bold();
                     f.render_widget(Span::styled(" ◄ ", arrow), r);
                     f.render_widget(Line::styled(" ► ", arrow).right_aligned(), r);
+                    if focused {
+                        f.render_widget(
+                            Span::styled("▍", Style::new().fg(t.accent).bg(t.border)),
+                            Rect { width: 1, ..r },
+                        );
+                    }
                     hits.push(r, Action::FormNext(i));
                     hits.push(Rect { width: 5, ..r }, Action::FormPrev(i));
                     hits.push(

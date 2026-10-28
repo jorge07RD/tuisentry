@@ -47,6 +47,17 @@ pub fn human(secs: f64) -> String {
     }
 }
 
+/// Hace cuánto, en una sola unidad: `ahora`, `12 min`, `3 h`, `2 d`.
+pub fn ago(secs: f64) -> String {
+    let s = secs.max(0.0) as u64;
+    match s {
+        0..60 => "ahora".into(),
+        60..3600 => format!("hace {} min", s / 60),
+        3600..86_400 => format!("hace {} h", s / 3600),
+        _ => format!("hace {} d", s / 86_400),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -65,5 +76,7 @@ mod tests {
         assert_eq!(human(600.0), "10 min");
         assert_eq!(human(3.0 * 3600.0 + 300.0), "3 h 05 min");
         assert_eq!(human(2.0 * 86_400.0 + 7200.0), "2 d 2 h");
+        assert_eq!(ago(30.0), "ahora");
+        assert_eq!(ago(6840.0), "hace 1 h");
     }
 }

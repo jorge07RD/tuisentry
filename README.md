@@ -1,32 +1,64 @@
-# tuisentry
+<div align="center">
 
-TUI ligera para vigilar tus servicios: HTTP/HTTPS, puertos TCP, ping, unidades
-systemd (locales o por ssh) y cualquier métrica que saque un comando. Varias
-páginas con paneles de gráficas, link directo a cada recurso, y se maneja
-entera con el mouse o con el dedo desde el celular.
+# ◆ tuisentry
 
-```
- ◆   Overview   Red                     ● 4 ● 2
-╭ Servicios ──────────────────────────────── ⤢ ╮
-│ ● example.com              205 ms  100.0%  ↗ │
-│                                              │
-│ ● Cloudflare DNS            38 ms  100.0%    │
-│                                              │
-│ ● SSH local                 caído    0.0%    │
-│                                              │
-│ ● API caída                 caído    0.0%  ↗ │
-│                                              │
-│ ● NetworkManager           active  100.0%    │
-│                                              │
-│ ● Disco /                     82%  100.0%    │
-╰──────────────────────────────────────────────╯
- ◄         Servicios 1/4          ►   ⟳   ?   ✕
-```
+**Tu monitor de servicios, en la terminal.**<br>
+Ligero, bonito y táctil: úsalo con el mouse en el escritorio o con el dedo desde el celular.
 
-- **Ligera:** binario de ~4 MB, ~4 MB de RAM y 0 % de CPU entre checks.
-- **Táctil:** todo funciona con clic o toque; el teclado es opcional.
-- **Responsiva:** rejilla de paneles en escritorio, un panel a la vez en pantallas chicas.
-- **Extensible:** checks y paneles nuevos sin tocar el núcleo, o métricas propias con `cmd`.
+[![CI](https://github.com/jorge07RD/tuisentry/actions/workflows/ci.yml/badge.svg)](https://github.com/jorge07RD/tuisentry/actions/workflows/ci.yml)
+[![Licencia MIT](https://img.shields.io/badge/licencia-MIT-bb9af7)](LICENSE)
+[![Rust 1.89+](https://img.shields.io/badge/rust-1.89%2B-f07178?logo=rust)](https://www.rust-lang.org)
+[![Hecho para Omarchy](https://img.shields.io/badge/tema-Omarchy-c2b8ff)](https://omarchy.org)
+
+<img src="docs/screenshots/demo.gif" alt="tuisentry: panel principal, menú, detalle, historial y formulario" width="900">
+
+</div>
+
+<table>
+<tr>
+<td width="33%" valign="top">
+
+**📈 Paneles de gráficas**<br>
+Estado, latencia, tendencias y uptime en páginas que tú defines. Toca un servicio y ves su detalle.
+
+</td>
+<td width="33%" valign="top">
+
+**🔔 Alertas al celular**<br>
+Caídas, recuperaciones, lentitud y certificados por vencer, por escritorio o push con ntfy.
+
+</td>
+<td width="33%" valign="top">
+
+**👆 Todo con el dedo**<br>
+Cada botón es tocable. Sírvela con ttyd y úsala desde el navegador del cel.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+**🕘 Historial que no se pierde**<br>
+Gráficas que sobreviven reinicios, incidentes con duración, uptime de 30 días y exportar a CSV.
+
+</td>
+<td valign="top">
+
+**✎ Se edita desde la app**<br>
+Añade servicios, paneles y páginas con formularios; tu TOML conserva sus comentarios.
+
+</td>
+<td valign="top">
+
+**🪶 Ligera de verdad**<br>
+Binario de ~4 MB, ~4 MB de RAM y 0 % de CPU entre comprobaciones. Daemon opcional.
+
+</td>
+</tr>
+</table>
+
+Vigila endpoints **HTTP/HTTPS**, puertos **TCP**, **ping**, unidades **systemd** (locales
+o por ssh) y cualquier métrica que saque un **comando**.
 
 ## Instalar
 
@@ -59,6 +91,15 @@ servicio), `Tab`/`1-9` páginas, `h`/`l` paneles, `j`/`k` scroll, `Enter` zoom,
 
 Con menos de 100 columnas se muestra un panel a la vez, pensado para el celular.
 
+![Panel principal con estado, latencia de 6 h, tendencias y uptime](docs/screenshots/dashboard.png)
+
+### Detalle de un servicio
+
+Toca cualquier servicio: estado y certificado, uptime, latencia mínima/media/máxima,
+su gráfica y botones para abrir el recurso, comprobar ahora o ir a sus opciones (`⋯`).
+
+![Detalle de un servicio con su gráfica y el link al recurso](docs/screenshots/detail.png)
+
 ### Temas
 
 Con `[theme] name = "omarchy"` (el valor por defecto si usas
@@ -68,7 +109,13 @@ rectas como el resto de Omarchy, y se repinta solo cuando cambias de tema con
 `omarchy theme set`. También trae `tokyonight`, `catppuccin` y `gruvbox`, que se
 eligen desde Ajustes → Tema.
 
+<p align="center"><img src="docs/screenshots/themes.png" alt="Los cuatro temas: omarchy, tokyonight, catppuccin y gruvbox" width="900"></p>
+
 ### Menú
+
+Tócalo en `≡` o abre con `Espacio`; escribe para buscar cualquier acción o servicio.
+
+<p align="center"><img src="docs/screenshots/menu.png" alt="Menú lateral con servicios, historial, alertas, vista y ajustes" width="900"></p>
 
 | Sección   | Qué tiene                                                              |
 |-----------|------------------------------------------------------------------------|
@@ -88,6 +135,8 @@ formularios táctiles; los campos se adaptan al tipo (un `http` pide URL, un
 `systemd` pide unidad y host). Los cambios se escriben en tu `config.toml`
 **conservando comentarios y orden**, y solo si el resultado es válido. Al
 renombrar o borrar un servicio también se actualizan los paneles que lo usan.
+
+<p align="center"><img src="docs/screenshots/form.png" alt="Formulario para añadir un servicio" width="900"></p>
 
 ### Alertas
 
@@ -139,10 +188,14 @@ no registrar parpadeos. La retención se ajusta con `[history] retention`.
 Las preferencias (tema, vista, servicios pausados) viven en la misma carpeta;
 `TUISENTRY_STATE_DIR` permite usar otra.
 
+<p align="center"><img src="docs/screenshots/history.png" alt="Historial de incidentes con su duración" width="900"></p>
+
 ## Desde el celular (navegador)
 
 La TUI corre en tu PC y la sirves con [ttyd](https://github.com/tsl0922/ttyd);
 en el cel solo abres una URL. Los toques llegan como clics.
+
+<p align="center"><img src="docs/screenshots/mobile.png" alt="tuisentry en el celular: panel, menú y detalle" width="760"></p>
 
 ```sh
 ttyd -W -p 7681 -t fontSize=15 -t disableLeaveAlert=true tuisentry --web
@@ -212,6 +265,8 @@ title = "VPS"
   `panels::build`. Registra en el `HitMap` las áreas tocables con su `Action`.
 - **Sin recompilar**: `kind = "cmd"` acepta cualquier comando cuyo stdout empiece
   por un número.
+
+> Las capturas usan datos de demostración.
 
 ## Licencia
 
