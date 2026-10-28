@@ -377,7 +377,7 @@ fn draw_detail(f: &mut Frame, app: &App, i: usize, hits: &mut HitMap) {
         ]),
     ];
     if let Some(u) = svc.history.uptime() {
-        let n = svc.history.iter().count();
+        let n = svc.history.len();
         lines.push(Line::from(vec![
             key("uptime"),
             Span::styled(format!("{:.2}%", u * 100.0), t.fg),
@@ -529,13 +529,6 @@ fn draw_menu(f: &mut Frame, app: &App, m: &MenuState, hits: &mut HitMap) {
             "●" => t.ok,
             _ => t.accent,
         };
-        f.render_widget(
-            Line::from(vec![
-                Span::styled(format!("{} ", item.icon), icon_color),
-                Span::styled(item.label.as_str(), t.fg),
-            ]),
-            line,
-        );
         let right = match (item.on, &item.badge) {
             (Some(true), _) => Span::styled("● sí", t.ok),
             (Some(false), _) => Span::styled("○ no", t.dim),
@@ -544,6 +537,15 @@ fn draw_menu(f: &mut Frame, app: &App, m: &MenuState, hits: &mut HitMap) {
             (None, None) if item.is_submenu() => Span::styled("▸", t.dim),
             _ => Span::raw(""),
         };
+        // La etiqueta cede espacio al valor de la derecha.
+        let room = (line.width as usize).saturating_sub(right.width() + 3);
+        f.render_widget(
+            Line::from(vec![
+                Span::styled(format!("{} ", item.icon), icon_color),
+                Span::styled(truncate(&item.label, room), t.fg),
+            ]),
+            line,
+        );
         f.render_widget(Line::from(right).right_aligned(), line);
         hits.push(
             Rect::new(list.x, y, list.width, row_h.min(list.bottom() - y)),
@@ -592,4 +594,20 @@ fn draw_help(f: &mut Frame, app: &App, hits: &mut HitMap) {
         Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(inner);
     f.render_widget(Paragraph::new(lines), text);
     button_row(f, buttons, app, &[(" ✕ Cerrar ", Action::Close)], hits);
+}
+
+/// Recorta a `max` columnas con `…` al final.
+fn truncate(s: &str, max: usize) -> String {
+    if Line::raw(s).width() <= max {
+        return s.into();
+    }
+    let mut out = String::new();
+    for c in s.chars() {
+        if Line::raw(out.as_str()).width() + 2 > max {
+            break;
+        }
+        out.push(c);
+    }
+    out.push('…');
+    out
 }

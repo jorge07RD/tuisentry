@@ -4,6 +4,11 @@
 [theme]
 name = "tokyonight"            # tokyonight | catppuccin | gruvbox
 
+# Historial en disco (~/.local/state/tuisentry/history): gráficas que sobreviven
+# reinicios, incidentes, uptime de 30 días y exportar a CSV.
+[history]
+retention = "90d"              # lo más antiguo se borra al arrancar
+
 # Hosts remotos, usados por checks `systemd` y `cmd` (vía ssh, con ControlMaster).
 # `ssh` puede ser user@host o un alias de ~/.ssh/config. Requiere login sin contraseña.
 # [[host]]

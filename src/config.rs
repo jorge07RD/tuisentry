@@ -14,12 +14,34 @@ pub struct Config {
     pub services: Vec<ServiceCfg>,
     #[serde(default, rename = "page")]
     pub pages: Vec<PageCfg>,
+    #[serde(default)]
+    pub history: HistoryCfg,
 }
 
 #[derive(Debug, Default, Deserialize)]
 pub struct ThemeCfg {
     #[serde(default)]
     pub name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HistoryCfg {
+    /// Cuánto se guarda en disco, p. ej. `90d`.
+    #[serde(default = "default_retention")]
+    pub retention: String,
+}
+
+impl Default for HistoryCfg {
+    fn default() -> Self {
+        Self {
+            retention: default_retention(),
+        }
+    }
+}
+
+fn default_retention() -> String {
+    "90d".into()
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -108,10 +130,11 @@ impl Config {
         Ok(cfg)
     }
 
-    fn validate(&self) -> Result<()> {
+    pub fn validate(&self) -> Result<()> {
         if self.services.is_empty() {
             bail!("no hay ningún [[service]] definido");
         }
+        parse_duration(&self.history.retention).context("[history] retention")?;
         let hosts: HashSet<_> = self.hosts.iter().map(|h| h.name.as_str()).collect();
         let mut names = HashSet::new();
         for s in &self.services {
@@ -164,7 +187,8 @@ pub fn parse_duration(s: &str) -> Result<Duration> {
         "s" | "" => Duration::from_secs(n),
         "m" => Duration::from_secs(n * 60),
         "h" => Duration::from_secs(n * 3600),
-        _ => bail!("unidad de duración inválida en {s:?} (usa ms, s, m o h)"),
+        "d" => Duration::from_secs(n * 86_400),
+        _ => bail!("unidad de duración inválida en {s:?} (usa ms, s, m, h o d)"),
     })
 }
 
@@ -177,7 +201,11 @@ mod tests {
         assert_eq!(parse_duration("500ms").unwrap(), Duration::from_millis(500));
         assert_eq!(parse_duration("30s").unwrap(), Duration::from_secs(30));
         assert_eq!(parse_duration("15m").unwrap(), Duration::from_secs(900));
-        assert!(parse_duration("3d").is_err());
+        assert_eq!(
+            parse_duration("3d").unwrap(),
+            Duration::from_secs(3 * 86_400)
+        );
+        assert!(parse_duration("3w").is_err());
         assert!(parse_duration("abc").is_err());
     }
 

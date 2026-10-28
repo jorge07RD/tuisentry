@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     path::PathBuf,
     time::{Duration, Instant},
 };
@@ -11,20 +12,18 @@ use tokio::sync::mpsc;
 
 use crate::{
     config::Config,
-    engine::{Command, Event, ServiceInfo},
+    engine::{Command, Event, Incident, ServiceInfo},
     input::{Action, HitMap, MENU_SCROLL},
     links,
-    menu::MenuState,
+    menu::{MenuState, Screen},
     panels::{self, Panel, fmt_span},
     prefs::UiPrefs,
-    store::{History, unix_now},
+    store::{History, MEMORY_WINDOW, unix_now},
     theme::Theme,
     view::View,
 };
 
 const FREE_MOUSE: Duration = Duration::from_secs(10);
-/// Muestras que la UI guarda por servicio (las mismas que el motor).
-const HISTORY: usize = 600;
 
 pub struct Service {
     pub name: String,
@@ -50,12 +49,12 @@ impl Service {
             suffix: "ms".into(),
             paused: false,
             muted: false,
-            history: History::new(HISTORY),
+            history: History::default(),
         }
     }
 
     fn from_info(info: ServiceInfo) -> Self {
-        let mut history = History::new(HISTORY);
+        let mut history = History::default();
         for s in info.history {
             history.push(s);
         }
@@ -135,6 +134,10 @@ pub struct App {
     pub mouse_free_until: Option<Instant>,
     pub hits: HitMap,
     pub effects: Vec<Effect>,
+    /// Abiertos primero, luego los cerrados más recientes.
+    pub incidents: Vec<Incident>,
+    /// Uptime 24h/7d/30d por índice de servicio, calculado bajo demanda.
+    pub stats: HashMap<usize, [Option<f64>; 3]>,
     cmd: mpsc::UnboundedSender<Command>,
     /// Dónde empezó el toque/clic actual y la última fila vista al arrastrar.
     press: Option<(u16, u16)>,
@@ -173,6 +176,8 @@ impl App {
             mouse_free_until: None,
             hits: HitMap::default(),
             effects: vec![],
+            incidents: vec![],
+            stats: HashMap::new(),
             cmd,
             press: None,
             drag_y: 0,
@@ -226,6 +231,8 @@ impl App {
             Event::Snapshot(infos) => {
                 self.services = infos.into_iter().map(Service::from_info).collect();
                 self.selected = self.selected.filter(|&i| i < self.services.len());
+                // Los índices pueden haber cambiado con la recarga.
+                self.stats.clear();
                 self.build_pages();
             }
             Event::Sample(i, s) => {
@@ -238,6 +245,10 @@ impl App {
                     svc.paused = paused;
                     svc.muted = muted;
                 }
+            }
+            Event::Incidents(list) => self.incidents = list,
+            Event::Stats { idx, uptime } => {
+                self.stats.insert(idx, uptime);
             }
             Event::Toast(msg) => self.toast(msg),
         }
@@ -382,6 +393,9 @@ impl App {
                 }
             }
             Action::MenuGo(s) => {
+                if let Screen::Service(i) = s {
+                    self.send(Command::Stats(i));
+                }
                 // Desde fuera del menú (p. ej. el detalle) se abre directo en esa pantalla.
                 self.selected = None;
                 match &mut self.menu {
@@ -420,6 +434,11 @@ impl App {
                 }
             }
             Action::Reload => self.reload(),
+            Action::Export(i) => {
+                let secs = self.view.window.unwrap_or(MEMORY_WINDOW);
+                self.send(Command::Export(i, secs));
+                self.toast(format!("exportando {}…", self.services[i].name));
+            }
             Action::EditConfig => {
                 self.menu = None;
                 self.effects.push(Effect::EditConfig);
@@ -492,6 +511,11 @@ impl App {
                     return self.apply(a);
                 }
             }
+            // Espacio con la búsqueda vacía cierra, igual que lo abrió.
+            KeyCode::Char(' ') if m.query.is_empty() => {
+                self.menu = None;
+                return;
+            }
             KeyCode::Char(c) => {
                 m.query.push(c);
                 m.sel = 0;
@@ -562,7 +586,7 @@ impl App {
 
     /// Abre el menú en una pantalla concreta (para tests y atajos).
     #[cfg(test)]
-    pub fn open_menu(&mut self, s: crate::menu::Screen) {
+    pub fn open_menu(&mut self, s: Screen) {
         self.menu = Some(MenuState::at(s));
     }
 }
@@ -592,7 +616,6 @@ pub fn test_app(services: Vec<Service>) -> App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::menu::Screen;
 
     #[test]
     fn values() {

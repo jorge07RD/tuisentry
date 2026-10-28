@@ -1,13 +1,17 @@
 //! Menú táctil: pantallas con entradas generadas a partir del estado de la app,
 //! y búsqueda que recorre todas a la vez (paleta de comandos).
 
-use crate::{app::App, input::Action, panels::fmt_span, theme::Theme, view::Sort};
+use crate::{
+    app::App, input::Action, panels::fmt_span, store::unix_now, text::fold, theme::Theme,
+    time::human, view::Sort,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
     Root,
     Services,
     Service(usize),
+    History,
     View,
     Window,
     Sort,
@@ -91,6 +95,7 @@ pub fn title(screen: Screen, app: &App) -> String {
         Screen::Root => "Menú".into(),
         Screen::Services => "Servicios".into(),
         Screen::Service(i) => app.services.get(i).map_or("?".into(), |s| s.name.clone()),
+        Screen::History => "Historial".into(),
         Screen::View => "Vista".into(),
         Screen::Window => "Ventana de tiempo".into(),
         Screen::Sort => "Ordenar".into(),
@@ -113,8 +118,14 @@ pub fn items(screen: Screen, app: &App) -> Vec<MenuItem> {
             if down > 0 {
                 services = services.badge(format!("{down} caídos"));
             }
+            let open = app.incidents.iter().filter(|i| i.end.is_none()).count();
+            let mut history = MenuItem::new("◷", "Historial", A::MenuGo(Screen::History));
+            if open > 0 {
+                history = history.badge(format!("{open} abiertos"));
+            }
             vec![
                 services,
+                history,
                 MenuItem::new("▦", "Vista", A::MenuGo(Screen::View)),
                 MenuItem::new("⚙", "Ajustes", A::MenuGo(Screen::Settings)),
                 MenuItem::new("?", "Ayuda", A::Help),
@@ -154,7 +165,41 @@ pub fn items(screen: Screen, app: &App) -> Vec<MenuItem> {
             }
             v.push(MenuItem::new("⟳", "Comprobar ahora", A::Check(Some(i))));
             v.push(MenuItem::new("‖", "Pausado", A::TogglePause(i)).toggle(s.paused));
+            let pct = |u: Option<f64>| match u {
+                None => "–".into(),
+                Some(u) if u >= 0.9995 => "100%".into(),
+                Some(u) => format!("{:.1}%", u * 100.0),
+            };
+            let uptime = app
+                .stats
+                .get(&i)
+                .map_or("calculando…".into(), |u| u.map(pct).join(" · "));
+            v.push(MenuItem::new("◔", "Uptime 24h·7d·30d", A::Block).badge(uptime));
+            v.push(MenuItem::new("⇩", "Exportar CSV", A::Export(i)));
             v
+        }
+        Screen::History => {
+            if app.incidents.is_empty() {
+                return vec![MenuItem::new("✓", "Sin incidentes registrados", A::Block)];
+            }
+            let now = unix_now();
+            app.incidents
+                .iter()
+                .map(|inc| {
+                    let target = app
+                        .services
+                        .iter()
+                        .position(|s| s.name == inc.service)
+                        .map_or(A::Block, |i| A::MenuGo(Screen::Service(i)));
+                    match inc.end {
+                        None => MenuItem::new("✗", format!("{} · caído", inc.service), target)
+                            .badge(format!("hace {}", human(now - inc.start))),
+                        Some(end) => MenuItem::new("✓", inc.service.clone(), target).badge(
+                            format!("{} · hace {}", human(end - inc.start), human(now - end)),
+                        ),
+                    }
+                })
+                .collect()
         }
         Screen::View => {
             let window = app.view.window.map_or("por panel".into(), fmt_span);
@@ -229,11 +274,7 @@ pub fn search(query: &str, app: &App) -> Vec<MenuItem> {
     for screen in screens {
         let ctx = title(screen, app);
         for mut item in items(screen, app) {
-            // Los submenús genéricos no aportan; los de servicio sí (buscar por nombre).
             let is_service = matches!(item.action, Action::MenuGo(Screen::Service(_)));
-            if item.is_submenu() && !is_service {
-                continue;
-            }
             let label = if screen == Screen::Root || is_service {
                 item.label.clone()
             } else {
@@ -246,31 +287,4 @@ pub fn search(query: &str, app: &App) -> Vec<MenuItem> {
         }
     }
     out
-}
-
-/// Minúsculas y sin tildes, para comparar.
-fn fold(s: &str) -> String {
-    s.chars()
-        .flat_map(char::to_lowercase)
-        .map(|c| match c {
-            'á' | 'à' | 'ä' => 'a',
-            'é' | 'è' | 'ë' => 'e',
-            'í' | 'ì' | 'ï' => 'i',
-            'ó' | 'ò' | 'ö' => 'o',
-            'ú' | 'ù' | 'ü' => 'u',
-            'ñ' => 'n',
-            c => c,
-        })
-        .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::fold;
-
-    #[test]
-    fn fold_ignores_case_and_accents() {
-        assert_eq!(fold("Señal Áreas"), "senal areas");
-        assert!(fold("Configuración").contains(&fold("configuracion")));
-    }
 }

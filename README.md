@@ -64,10 +64,20 @@ Con menos de 100 columnas se muestra un panel a la vez, pensado para el celular.
 |-----------|------------------------------------------------------------------------|
 | Servicios | comprobar todo · pausar/reanudar todo · por servicio: detalle, abrir, copiar URL, comprobar, pausar |
 | Vista     | ventana de tiempo (5m–24h) · ordenar (config, nombre, estado, latencia) · solo caídos · filas táctiles |
+| Historial | incidentes abiertos y cerrados con su duración                         |
 | Ajustes   | tema · recargar config · editar config en `$EDITOR`                      |
 
-Las preferencias (tema, vista, servicios pausados) se guardan en
-`~/.local/state/tuisentry/`.
+Cada servicio muestra además su uptime de 24h/7d/30d y se puede exportar a CSV
+(`~/tuisentry-<servicio>-<fecha>.csv`).
+
+### Historial
+
+Las muestras se guardan en `~/.local/state/tuisentry/history/<servicio>/<AAAA-MM>.jsonl`
+(un JSON por línea, fácil de procesar con `jq`) y los incidentes cerrados en
+`incidents.jsonl`. Un servicio cuenta como caído tras 2 fallos seguidos, para
+no registrar parpadeos. La retención se ajusta con `[history] retention`.
+Las preferencias (tema, vista, servicios pausados) viven en la misma carpeta;
+`TUISENTRY_STATE_DIR` permite usar otra.
 
 ## Desde el celular (navegador)
 

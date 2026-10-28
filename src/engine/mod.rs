@@ -2,21 +2,37 @@
 //! La UI solo habla con él por [`Command`] y [`Event`], así funciona igual en el
 //! mismo proceso que en un daemon.
 
-use std::{collections::HashMap, path::PathBuf, sync::Arc, sync::atomic::Ordering};
+pub mod health;
+pub mod persist;
+
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    sync::{Arc, atomic::Ordering},
+    time::Duration,
+};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use tokio::{sync::mpsc, task::JoinHandle};
 
+pub use self::persist::Incident;
+use self::{
+    health::{Tracker, Transition},
+    persist::Persist,
+};
 use crate::{
     checks::{self, Check, Ctl, Tagged},
-    config::Config,
-    prefs::EnginePrefs,
-    store::{History, Sample},
+    config::{Config, parse_duration},
+    prefs::{self, EnginePrefs},
+    store::{History, MEMORY_WINDOW, Sample, unix_now},
+    time,
 };
 
-/// Muestras guardadas en memoria por servicio.
-const HISTORY: usize = 600;
+/// Fallos seguidos antes de declarar un servicio caído.
+const FAIL_AFTER: u32 = 2;
+/// Incidentes cerrados que se cargan del disco y se envían a la UI.
+const RECENT_INCIDENTS: usize = 50;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Command {
@@ -27,6 +43,10 @@ pub enum Command {
     SetMuted(usize, bool),
     /// Vuelve a leer la config del disco.
     Reload,
+    /// Calcula el uptime de 24h/7d/30d desde el disco.
+    Stats(usize),
+    /// Exporta a CSV las muestras de los últimos `secs` segundos.
+    Export(usize, f64),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,38 +72,63 @@ pub enum Event {
         paused: bool,
         muted: bool,
     },
+    /// Abiertos primero, luego los cerrados más recientes.
+    Incidents(Vec<Incident>),
+    /// Uptime de 24h, 7d y 30d.
+    Stats {
+        idx: usize,
+        uptime: [Option<f64>; 3],
+    },
     Toast(String),
 }
 
 struct Runtime {
     info: ServiceInfo,
     history: History,
+    tracker: Tracker,
     ctl: Ctl,
     task: JoinHandle<()>,
 }
 
 pub struct Engine {
     path: PathBuf,
+    dir: PathBuf,
     generation: u64,
     services: Vec<Runtime>,
     tx: mpsc::UnboundedSender<Tagged>,
     rx: mpsc::UnboundedReceiver<Tagged>,
+    /// Resultados de tareas en segundo plano (stats, export).
+    aux_tx: mpsc::UnboundedSender<Event>,
+    aux_rx: mpsc::UnboundedReceiver<Event>,
     subs: Vec<mpsc::UnboundedSender<Event>>,
     prefs: EnginePrefs,
+    persist: Persist,
+    open: Vec<Incident>,
+    recent: Vec<Incident>,
 }
 
 impl Engine {
     pub fn new(path: PathBuf) -> Result<Self> {
         let cfg = Config::load(&path)?;
+        let dir = prefs::state_dir().join("history");
         let (tx, rx) = mpsc::unbounded_channel();
+        let (aux_tx, aux_rx) = mpsc::unbounded_channel();
+        let retention = parse_duration(&cfg.history.retention)?.as_secs_f64();
+        persist::prune(&dir, unix_now() - retention);
         let mut engine = Self {
             path,
+            persist: Persist::new(dir.clone()),
+            recent: persist::incidents(&dir, RECENT_INCIDENTS),
+            dir,
             generation: 0,
             services: vec![],
             tx,
             rx,
+            aux_tx,
+            aux_rx,
             subs: vec![],
             prefs: EnginePrefs::load(),
+            open: vec![],
         };
         engine.start(&cfg)?;
         Ok(engine)
@@ -97,14 +142,15 @@ impl Engine {
             .iter()
             .map(|s| checks::build(s, cfg))
             .collect::<Result<Vec<_>>>()?;
-        let mut old: HashMap<String, History> = self
+        let mut old: HashMap<String, (History, Tracker)> = self
             .services
             .drain(..)
             .map(|rt| {
                 rt.task.abort();
-                (rt.info.name, rt.history)
+                (rt.info.name, (rt.history, rt.tracker))
             })
             .collect();
+        self.persist.close_all();
         self.generation += 1;
 
         for (i, (sc, check)) in cfg.services.iter().zip(built).enumerate() {
@@ -130,6 +176,13 @@ impl Engine {
                 muted: self.prefs.muted.contains(&sc.name),
                 history: vec![],
             };
+            let (history, tracker) = old.remove(&sc.name).unwrap_or_else(|| {
+                let mut h = History::default();
+                for s in persist::load(&self.dir, &sc.name, unix_now() - MEMORY_WINDOW) {
+                    h.push(s);
+                }
+                (h, Tracker::default())
+            });
             let task = checks::spawn(
                 (self.generation, i),
                 check,
@@ -138,14 +191,16 @@ impl Engine {
                 self.tx.clone(),
             );
             self.services.push(Runtime {
-                history: old
-                    .remove(&sc.name)
-                    .unwrap_or_else(|| History::new(HISTORY)),
                 info,
+                history,
+                tracker,
                 ctl,
                 task,
             });
         }
+        // Los incidentes de servicios que ya no existen se descartan.
+        self.open
+            .retain(|inc| self.services.iter().any(|rt| rt.info.name == inc.service));
         Ok(())
     }
 
@@ -159,10 +214,15 @@ impl Engine {
             .collect()
     }
 
-    /// Nuevo receptor de eventos; empieza con un `Snapshot`.
+    fn incidents(&self) -> Vec<Incident> {
+        self.open.iter().chain(&self.recent).cloned().collect()
+    }
+
+    /// Nuevo receptor de eventos; empieza con el estado completo.
     pub fn subscribe(&mut self) -> mpsc::UnboundedReceiver<Event> {
         let (tx, rx) = mpsc::unbounded_channel();
         let _ = tx.send(Event::Snapshot(self.snapshot()));
+        let _ = tx.send(Event::Incidents(self.incidents()));
         self.subs.push(tx);
         rx
     }
@@ -201,11 +261,50 @@ impl Engine {
                 Ok(()) => {
                     self.save_prefs();
                     self.broadcast(Event::Snapshot(self.snapshot()));
+                    self.broadcast(Event::Incidents(self.incidents()));
                     self.broadcast(Event::Toast("config recargada".into()));
                 }
                 Err(e) => self.broadcast(Event::Toast(format!("config inválida: {e:#}"))),
             },
+            Command::Stats(idx) => self.spawn_stats(idx),
+            Command::Export(idx, secs) => self.spawn_export(idx, secs),
         }
+    }
+
+    fn spawn_stats(&mut self, idx: usize) {
+        let Some(rt) = self.services.get(idx) else {
+            return;
+        };
+        self.persist.flush();
+        let (dir, name, tx) = (self.dir.clone(), rt.info.name.clone(), self.aux_tx.clone());
+        tokio::task::spawn_blocking(move || {
+            let now = unix_now();
+            let samples = persist::load(&dir, &name, now - 30.0 * 86_400.0);
+            let uptime = [1.0, 7.0, 30.0].map(|d| persist::uptime(&samples, now - d * 86_400.0));
+            let _ = tx.send(Event::Stats { idx, uptime });
+        });
+    }
+
+    fn spawn_export(&mut self, idx: usize, secs: f64) {
+        let Some(rt) = self.services.get(idx) else {
+            return;
+        };
+        self.persist.flush();
+        let (dir, name, tx) = (self.dir.clone(), rt.info.name.clone(), self.aux_tx.clone());
+        tokio::task::spawn_blocking(move || {
+            let now = unix_now();
+            let samples = persist::load(&dir, &name, now - secs);
+            let file = dirs::home_dir().unwrap_or_default().join(format!(
+                "tuisentry-{}-{}.csv",
+                persist::slug(&name),
+                time::date(now)
+            ));
+            let msg = match persist::write_csv(&file, &samples) {
+                Ok(()) => format!("⇩ {} muestras en {}", samples.len(), file.display()),
+                Err(e) => format!("no pude exportar: {e}"),
+            };
+            let _ = tx.send(Event::Toast(msg));
+        });
     }
 
     fn flags_changed(&mut self, idxs: Vec<usize>) {
@@ -238,10 +337,42 @@ impl Engine {
         if generation != self.generation {
             return;
         }
-        if let Some(rt) = self.services.get_mut(idx) {
-            rt.history.push(sample.clone());
-            self.broadcast(Event::Sample(idx, sample));
+        let Some(rt) = self.services.get_mut(idx) else {
+            return;
+        };
+        rt.history.push(sample.clone());
+        let _ = self.persist.append(&rt.info.name, &sample);
+        let name = rt.info.name.clone();
+        let transition = rt.tracker.observe(&sample, FAIL_AFTER);
+        self.broadcast(Event::Sample(idx, sample));
+        if let Some(t) = transition {
+            self.on_transition(&name, t);
         }
+    }
+
+    fn on_transition(&mut self, service: &str, t: Transition) {
+        match t {
+            Transition::Down { since, cause } => self.open.push(Incident {
+                service: service.into(),
+                start: since,
+                end: None,
+                cause,
+            }),
+            Transition::Up { since, duration } => {
+                if let Some(pos) = self
+                    .open
+                    .iter()
+                    .position(|i| i.service == service && i.start == since)
+                {
+                    let mut inc = self.open.remove(pos);
+                    inc.end = Some(since + duration);
+                    let _ = self.persist.incident(&inc);
+                    self.recent.insert(0, inc);
+                    self.recent.truncate(RECENT_INCIDENTS);
+                }
+            }
+        }
+        self.broadcast(Event::Incidents(self.incidents()));
     }
 
     /// Bucle principal. Termina cuando se cierran todos los emisores de comandos.
@@ -250,20 +381,26 @@ impl Engine {
         mut cmds: mpsc::UnboundedReceiver<Command>,
         mut subs: mpsc::UnboundedReceiver<mpsc::UnboundedSender<Event>>,
     ) {
+        let mut flush = tokio::time::interval(Duration::from_secs(1));
         loop {
             tokio::select! {
                 Some(t) = self.rx.recv() => self.on_sample(t),
+                Some(ev) = self.aux_rx.recv() => self.broadcast(ev),
                 cmd = cmds.recv() => match cmd {
                     Some(c) => self.handle(c),
                     None => break,
                 },
                 Some(sub) = subs.recv() => {
-                    if sub.send(Event::Snapshot(self.snapshot())).is_ok() {
+                    let ok = sub.send(Event::Snapshot(self.snapshot())).is_ok()
+                        && sub.send(Event::Incidents(self.incidents())).is_ok();
+                    if ok {
                         self.subs.push(sub);
                     }
                 }
+                _ = flush.tick() => self.persist.flush(),
             }
         }
+        self.persist.flush();
         for rt in &self.services {
             rt.task.abort();
         }

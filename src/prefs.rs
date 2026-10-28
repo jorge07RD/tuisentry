@@ -7,7 +7,11 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::view::View;
 
+/// `$TUISENTRY_STATE_DIR` o `~/.local/state/tuisentry`.
 pub fn state_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("TUISENTRY_STATE_DIR") {
+        return dir.into();
+    }
     dirs::state_dir()
         .or_else(dirs::data_local_dir)
         .unwrap_or_else(std::env::temp_dir)

@@ -8,7 +8,9 @@ mod menu;
 mod panels;
 mod prefs;
 mod store;
+mod text;
 mod theme;
+mod time;
 mod ui;
 mod view;
 
@@ -231,6 +233,10 @@ async fn main() -> Result<()> {
 
     execute!(stdout(), DisableMouseCapture)?;
     ratatui::restore();
+    // Cerrar los canales deja que el motor escriba lo pendiente al disco.
+    drop(app);
+    drop(backend);
+    tokio::time::sleep(Duration::from_millis(100)).await;
     result
 }
 

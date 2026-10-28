@@ -18,6 +18,8 @@ pub enum Action {
     Select(usize),
     OpenLink(usize),
     CopyUrl(usize),
+    /// Exporta a CSV la ventana actual del servicio.
+    Export(usize),
     /// `None` = todos los servicios.
     Check(Option<usize>),
     TogglePause(usize),

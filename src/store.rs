@@ -22,18 +22,36 @@ pub struct Sample {
     pub detail: String,
 }
 
-/// Historial acotado de muestras de un servicio.
+/// Lo que se guarda en memoria por servicio; lo anterior queda solo en disco.
+pub const MEMORY_WINDOW: f64 = 24.0 * 3600.0;
+/// Tope de seguridad por si un servicio se comprueba muy a menudo.
+const MEMORY_CAP: usize = 20_000;
+
+/// Historial acotado de muestras de un servicio: por cantidad y por antigüedad.
 #[derive(Debug, Clone)]
 pub struct History {
     buf: VecDeque<Sample>,
     cap: usize,
+    window: f64,
+}
+
+impl Default for History {
+    fn default() -> Self {
+        Self {
+            buf: VecDeque::new(),
+            cap: MEMORY_CAP,
+            window: MEMORY_WINDOW,
+        }
+    }
 }
 
 impl History {
+    #[cfg(test)]
     pub fn new(cap: usize) -> Self {
         Self {
             buf: VecDeque::with_capacity(cap),
             cap,
+            window: f64::INFINITY,
         }
     }
 
@@ -41,7 +59,14 @@ impl History {
         if self.buf.len() == self.cap {
             self.buf.pop_front();
         }
+        while self.buf.front().is_some_and(|f| s.at - f.at > self.window) {
+            self.buf.pop_front();
+        }
         self.buf.push_back(s);
+    }
+
+    pub fn len(&self) -> usize {
+        self.buf.len()
     }
 
     pub fn last(&self) -> Option<&Sample> {
