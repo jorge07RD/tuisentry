@@ -4,9 +4,11 @@
 
 pub mod health;
 pub mod persist;
+pub mod remote;
 
 use std::{
     collections::HashMap,
+    fs::File,
     path::PathBuf,
     sync::{Arc, atomic::Ordering},
     time::Duration,
@@ -51,6 +53,10 @@ pub enum Command {
     Export(usize, f64),
     /// Manda una alerta de prueba por todos los canales.
     TestAlert,
+    /// Escribe lo pendiente y termina. No viaja por el socket: un cliente
+    /// no puede apagar el daemon.
+    #[serde(skip)]
+    Shutdown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,6 +121,18 @@ pub struct Engine {
     recent: Vec<Incident>,
     alerts: AlertsCfg,
     notifiers: Arc<Vec<Box<dyn Notifier>>>,
+    /// Candado que hace de este motor el único que persiste y alerta.
+    /// Sin él (otra instancia lo tiene), el motor solo muestra datos.
+    lock: Option<File>,
+}
+
+/// Intenta tomar el candado del motor primario; `None` si otro lo tiene.
+fn take_lock() -> Option<File> {
+    let dir = prefs::state_dir();
+    std::fs::create_dir_all(&dir).ok()?;
+    let f = File::create(dir.join("engine.lock")).ok()?;
+    f.try_lock().ok()?;
+    Some(f)
 }
 
 impl Engine {
@@ -123,8 +141,6 @@ impl Engine {
         let dir = prefs::state_dir().join("history");
         let (tx, rx) = mpsc::unbounded_channel();
         let (aux_tx, aux_rx) = mpsc::unbounded_channel();
-        let retention = parse_duration(&cfg.history.retention)?.as_secs_f64();
-        persist::prune(&dir, unix_now() - retention);
         let mut engine = Self {
             path,
             persist: Persist::new(dir.clone()),
@@ -141,9 +157,19 @@ impl Engine {
             open: vec![],
             alerts: AlertsCfg::default(),
             notifiers: Arc::new(vec![]),
+            lock: take_lock(),
         };
+        if engine.is_primary() {
+            let retention = parse_duration(&cfg.history.retention)?.as_secs_f64();
+            persist::prune(&engine.dir, unix_now() - retention);
+        }
         engine.start(&cfg)?;
         Ok(engine)
+    }
+
+    /// El primario guarda el historial y manda alertas; un secundario solo muestra.
+    pub fn is_primary(&self) -> bool {
+        self.lock.is_some()
     }
 
     /// (Re)lanza los checks de `cfg` conservando el historial por nombre.
@@ -294,6 +320,7 @@ impl Engine {
                 }
                 Err(e) => self.broadcast(Event::Toast(format!("config inválida: {e:#}"))),
             },
+            Command::Shutdown => {}
             Command::Stats(idx) => self.spawn_stats(idx),
             Command::Export(idx, secs) => self.spawn_export(idx, secs),
             Command::TestAlert => {
@@ -321,7 +348,7 @@ impl Engine {
                 .any(|rt| rt.info.name == alert.service && rt.info.muted);
         let suffix = if muted { " (silenciado)" } else { "" };
         self.broadcast(Event::Toast(format!("{}{suffix}", alert.title())));
-        if muted || self.notifiers.is_empty() {
+        if muted || self.notifiers.is_empty() || !self.is_primary() {
             return;
         }
         let (notifiers, tx) = (self.notifiers.clone(), self.aux_tx.clone());
@@ -404,7 +431,9 @@ impl Engine {
             return;
         };
         rt.history.push(sample.clone());
-        let _ = self.persist.append(&rt.info.name, &sample);
+        if self.lock.is_some() {
+            let _ = self.persist.append(&rt.info.name, &sample);
+        }
         let (name, link) = (rt.info.name.clone(), rt.info.link.clone());
         let transition = rt.tracker.observe(&sample, self.alerts.fail_after);
         let extra = rt.eval.observe(&sample, rt.slow_ms, self.alerts.cert_days);
@@ -450,7 +479,9 @@ impl Engine {
                 {
                     let mut inc = self.open.remove(pos);
                     inc.end = Some(since + duration);
-                    let _ = self.persist.incident(&inc);
+                    if self.lock.is_some() {
+                        let _ = self.persist.incident(&inc);
+                    }
                     self.recent.insert(0, inc);
                     self.recent.truncate(RECENT_INCIDENTS);
                 }
@@ -471,8 +502,8 @@ impl Engine {
                 Some(t) = self.rx.recv() => self.on_sample(t),
                 Some(ev) = self.aux_rx.recv() => self.broadcast(ev),
                 cmd = cmds.recv() => match cmd {
+                    Some(Command::Shutdown) | None => break,
                     Some(c) => self.handle(c),
-                    None => break,
                 },
                 Some(sub) = subs.recv() => {
                     let ok = sub.send(Event::Snapshot(self.snapshot())).is_ok()
@@ -492,18 +523,57 @@ impl Engine {
     }
 }
 
+/// De dónde vienen los datos que ve la UI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// Motor propio que guarda historial y alerta.
+    Local,
+    /// Motor propio sin persistir ni alertar: otra instancia lo hace.
+    Viewer,
+    /// Conectado al daemon.
+    Remote,
+}
+
 /// Canales para hablar con el motor.
 pub struct Backend {
     pub cmd: mpsc::UnboundedSender<Command>,
     pub events: mpsc::UnboundedReceiver<Event>,
+    pub mode: Mode,
+    /// Tarea del motor local, para esperar a que suelte el candado.
+    pub task: Option<JoinHandle<()>>,
+}
+
+impl Backend {
+    /// Detiene el motor local (si lo hay) y espera a que escriba lo pendiente
+    /// y suelte el candado. Con el daemon solo se cierra la conexión.
+    pub async fn shutdown(self) {
+        let Backend { cmd, task, .. } = self;
+        if task.is_some() {
+            let _ = cmd.send(Command::Shutdown);
+        }
+        drop(cmd);
+        if let Some(task) = task {
+            let _ = tokio::time::timeout(Duration::from_secs(3), task).await;
+        }
+    }
 }
 
 /// Motor dentro del mismo proceso que la UI.
 pub fn local(path: PathBuf) -> Result<Backend> {
     let mut engine = Engine::new(path)?;
+    let mode = if engine.is_primary() {
+        Mode::Local
+    } else {
+        Mode::Viewer
+    };
     let events = engine.subscribe();
     let (cmd, cmds) = mpsc::unbounded_channel();
     let (_no_subs, subs) = mpsc::unbounded_channel();
-    tokio::spawn(engine.run(cmds, subs));
-    Ok(Backend { cmd, events })
+    let task = tokio::spawn(engine.run(cmds, subs));
+    Ok(Backend {
+        cmd,
+        events,
+        mode,
+        task: Some(task),
+    })
 }

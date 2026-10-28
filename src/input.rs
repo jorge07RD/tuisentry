@@ -66,6 +66,8 @@ pub enum Action {
     FormCancel,
     ConfirmYes,
     ConfirmNo,
+    DaemonInstall,
+    DaemonUninstall,
 }
 
 /// Texto que, tras dibujar, se reescribe como hipervínculo OSC 8.

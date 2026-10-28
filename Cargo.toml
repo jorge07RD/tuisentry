@@ -2,7 +2,7 @@
 name = "tuisentry"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.89"
 description = "TUI ligera para monitorear servicios, usable con mouse y desde el celular"
 license = "MIT"
 repository = "https://github.com/jorge07RD/tuisentry"
@@ -19,7 +19,7 @@ reqwest = { version = "0.13.5", default-features = false, features = ["rustls", 
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 surge-ping = "0.9.1"
-tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time", "net", "process", "sync"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time", "net", "process", "sync", "signal", "io-util"] }
 toml = "1.1.8"
 toml_edit = "0.25.17"
 x509-parser = "0.18.1"

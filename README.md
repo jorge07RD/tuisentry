@@ -30,13 +30,14 @@ entera con el mouse o con el dedo desde el celular.
 
 ## Instalar
 
-Requiere Rust 1.88 o más reciente.
+Requiere Rust 1.89 o más reciente.
 
 ```sh
 cargo install --git https://github.com/jorge07RD/tuisentry
 tuisentry --init          # crea ~/.config/tuisentry/config.toml de ejemplo
 tuisentry                 # o: tuisentry --config otra.toml
 tuisentry --once          # ejecuta cada check una vez y sale (útil en scripts/CI)
+tuisentry --daemon        # sin interfaz: guarda historial y alerta
 ```
 
 ## Uso
@@ -102,6 +103,23 @@ topic = "un-nombre-dificil-de-adivinar"
 Desde el menú **Alertas** puedes enviar una prueba y silenciar servicios. Las
 alertas se envían mientras tuisentry está abierto; para recibirlas siempre,
 activa el modo daemon.
+
+### Modo daemon (alertas 24/7)
+
+Por defecto el monitoreo vive dentro de la TUI. Para que siga guardando historial
+y alertando con la ventana cerrada, activa el daemon (servicio de usuario de
+systemd):
+
+```sh
+tuisentry --install-daemon      # o desde el menú: Ajustes → Daemon
+tuisentry --uninstall-daemon
+```
+
+Con el daemon corriendo, cada TUI que abras se conecta a él (`⇄ daemon` en la
+cabecera) por `$XDG_RUNTIME_DIR/tuisentry.sock`: ves los mismos datos, y pausar,
+silenciar o comprobar desde cualquier ventana actúa sobre el daemon. Sin daemon,
+si abres dos TUIs, solo la primera guarda y alerta; la segunda queda en
+`◌ solo vista`, para no duplicar avisos.
 
 ### Historial
 

@@ -10,6 +10,7 @@ use ratatui::{
 
 use crate::{
     app::{App, fmt_value},
+    engine::Mode,
     form::{FieldKind, Form},
     input::{Action, FORM_SCROLL, HitMap, MENU_SCROLL},
     menu::{self, MenuState, Screen},
@@ -96,6 +97,11 @@ fn draw_header(f: &mut Frame, band: Rect, app: &App, hits: &mut HitMap) {
     ];
     if !app.mouse_wanted() {
         summary.insert(0, Span::styled("⇱ mouse libre  ", t.warn));
+    }
+    match app.mode {
+        Mode::Remote => summary.insert(0, Span::styled("⇄ daemon  ", t.accent)),
+        Mode::Viewer => summary.insert(0, Span::styled("◌ solo vista  ", t.warn)),
+        Mode::Local => {}
     }
     let summary = Line::from(summary).right_aligned();
     let summary_w = summary.width() as u16;

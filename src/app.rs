@@ -14,7 +14,7 @@ use tokio::sync::mpsc;
 use crate::{
     config::Config,
     config_edit,
-    engine::{Command, Event, Incident, ServiceInfo},
+    engine::{Command, Event, Incident, Mode, ServiceInfo},
     form::{self, Form},
     input::{Action, FORM_SCROLL, HitMap, MENU_SCROLL},
     links,
@@ -128,6 +128,8 @@ pub struct Confirm {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Effect {
     EditConfig,
+    InstallDaemon,
+    UninstallDaemon,
 }
 
 pub struct App {
@@ -158,6 +160,8 @@ pub struct App {
     pub channels: Vec<String>,
     pub form: Option<Form>,
     pub confirm: Option<Confirm>,
+    /// De dónde vienen los datos (motor propio, solo vista o daemon).
+    pub mode: Mode,
     cmd: mpsc::UnboundedSender<Command>,
     /// Dónde empezó el toque/clic actual y la última fila vista al arrastrar.
     press: Option<(u16, u16)>,
@@ -201,6 +205,7 @@ impl App {
             channels: vec![],
             form: None,
             confirm: None,
+            mode: Mode::Local,
             cmd,
             press: None,
             drag_y: 0,
@@ -276,6 +281,12 @@ impl App {
             }
             Event::Toast(msg) => self.toast(msg),
         }
+    }
+
+    /// Cambia el motor con el que habla la UI (p. ej. al pasar al daemon).
+    pub fn set_backend(&mut self, cmd: mpsc::UnboundedSender<Command>, mode: Mode) {
+        self.cmd = cmd;
+        self.mode = mode;
     }
 
     pub fn page(&self) -> &Page {
@@ -544,6 +555,16 @@ impl App {
             Action::FormSave => self.save_form(),
             Action::FormCancel => self.form = None,
             Action::ConfirmNo => self.confirm = None,
+            Action::DaemonInstall => {
+                self.menu = None;
+                self.toast("instalando el daemon…");
+                self.effects.push(Effect::InstallDaemon);
+            }
+            Action::DaemonUninstall => {
+                self.menu = None;
+                self.toast("quitando el daemon…");
+                self.effects.push(Effect::UninstallDaemon);
+            }
             Action::ConfirmYes => {
                 if let Some(c) = self.confirm.take() {
                     self.run_pending(c.op);

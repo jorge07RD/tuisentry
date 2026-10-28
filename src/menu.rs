@@ -2,8 +2,8 @@
 //! y búsqueda que recorre todas a la vez (paleta de comandos).
 
 use crate::{
-    app::App, input::Action, panels::fmt_span, store::unix_now, text::fold, theme::Theme,
-    time::human, view::Sort,
+    app::App, daemon, engine::Mode, input::Action, panels::fmt_span, store::unix_now, text::fold,
+    theme::Theme, time::human, view::Sort,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,6 +18,7 @@ pub enum Screen {
     Sort,
     Settings,
     Theme,
+    Daemon,
 }
 
 /// Ventanas de tiempo que ofrece el menú, en segundos.
@@ -103,6 +104,7 @@ pub fn title(screen: Screen, app: &App) -> String {
         Screen::Sort => "Ordenar".into(),
         Screen::Settings => "Ajustes".into(),
         Screen::Theme => "Tema".into(),
+        Screen::Daemon => "Daemon".into(),
     }
 }
 
@@ -275,9 +277,38 @@ pub fn items(screen: Screen, app: &App) -> Vec<MenuItem> {
                 MenuItem::new("◐", "Tema", A::MenuGo(Screen::Theme)).badge(app.theme_name.clone()),
                 MenuItem::new("⟳", "Recargar config", A::Reload),
                 MenuItem::new("✎", "Editar config en $EDITOR", A::EditConfig),
+                MenuItem::new("⇄", "Daemon (alertas 24/7)", A::MenuGo(Screen::Daemon)).badge(
+                    match app.mode {
+                        Mode::Remote => "conectado",
+                        Mode::Local => "apagado",
+                        Mode::Viewer => "solo vista",
+                    },
+                ),
             ];
             if app.web {
                 v.push(MenuItem::new("⇱", "Mouse libre 10 s", A::FreeMouse));
+            }
+            v
+        }
+        Screen::Daemon => {
+            let (icon, state) = match app.mode {
+                Mode::Remote => ("●", "conectado: guarda y alerta aunque cierres"),
+                Mode::Local => ("○", "apagado: esta ventana guarda y alerta"),
+                Mode::Viewer => ("◌", "solo vista: otra instancia guarda y alerta"),
+            };
+            let mut v = vec![MenuItem::new(icon, state, A::Block)];
+            if daemon::is_installed() {
+                v.push(MenuItem::new(
+                    "✕",
+                    "Desactivar y quitar el daemon",
+                    A::DaemonUninstall,
+                ));
+            } else {
+                v.push(MenuItem::new(
+                    "⇄",
+                    "Instalar y activar (systemd)",
+                    A::DaemonInstall,
+                ));
             }
             v
         }
@@ -292,7 +323,7 @@ pub fn items(screen: Screen, app: &App) -> Vec<MenuItem> {
 }
 
 /// Pantallas que la búsqueda recorre, además de una por servicio.
-const SEARCHABLE: [Screen; 8] = [
+const SEARCHABLE: [Screen; 9] = [
     Screen::Root,
     Screen::Services,
     Screen::Alerts,
@@ -301,6 +332,7 @@ const SEARCHABLE: [Screen; 8] = [
     Screen::Sort,
     Screen::Settings,
     Screen::Theme,
+    Screen::Daemon,
 ];
 
 /// Busca en todas las pantallas. Cada resultado lleva su contexto en la etiqueta.

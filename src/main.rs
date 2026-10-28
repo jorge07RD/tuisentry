@@ -3,6 +3,7 @@ mod app;
 mod checks;
 mod config;
 mod config_edit;
+mod daemon;
 mod engine;
 mod form;
 mod input;
@@ -54,6 +55,7 @@ USO:
     tuisentry [--config RUTA] [--web]
     tuisentry --init
     tuisentry --once [--config RUTA]
+    tuisentry --daemon [--config RUTA]
 
 OPCIONES:
     -c, --config RUTA   config a usar (por defecto ~/.config/tuisentry/config.toml)
@@ -61,6 +63,10 @@ OPCIONES:
         --init          crea la config de ejemplo en la ruta por defecto
         --once          valida la config, ejecuta cada check una vez y sale
                         (código 1 si alguno está caído)
+        --daemon        monitorea sin interfaz (guarda historial y alerta);
+                        las TUI que abras se conectan a él
+        --install-daemon    instala y activa el daemon como servicio de usuario
+        --uninstall-daemon  lo desactiva y lo quita
     -h, --help          muestra esta ayuda";
 
 struct Args {
@@ -68,6 +74,9 @@ struct Args {
     web: bool,
     init: bool,
     once: bool,
+    daemon: bool,
+    install_daemon: bool,
+    uninstall_daemon: bool,
 }
 
 fn parse_args() -> Result<Args> {
@@ -79,6 +88,9 @@ fn parse_args() -> Result<Args> {
         web: false,
         init: false,
         once: false,
+        daemon: false,
+        install_daemon: false,
+        uninstall_daemon: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -89,6 +101,9 @@ fn parse_args() -> Result<Args> {
             "--web" => args.web = true,
             "--init" => args.init = true,
             "--once" => args.once = true,
+            "--daemon" => args.daemon = true,
+            "--install-daemon" => args.install_daemon = true,
+            "--uninstall-daemon" => args.uninstall_daemon = true,
             "-h" | "--help" => {
                 println!("{USAGE}");
                 std::process::exit(0);
@@ -151,8 +166,31 @@ async fn main() -> Result<()> {
         return once(&cfg).await;
     }
 
-    let mut backend = engine::local(args.config.clone())?;
+    if args.daemon {
+        return daemon::run(args.config).await;
+    }
+    if args.install_daemon {
+        let unit = daemon::write_unit(&args.config)?;
+        daemon::enable()?;
+        println!(
+            "daemon activo ({}); abre tuisentry para conectarte",
+            unit.display()
+        );
+        return Ok(());
+    }
+    if args.uninstall_daemon {
+        daemon::uninstall()?;
+        println!("daemon desactivado y quitado");
+        return Ok(());
+    }
+
+    // Si hay daemon, la TUI solo lo muestra; si no, lleva su propio motor.
+    let mut backend = match engine::remote::connect().await {
+        Ok(b) => b,
+        Err(_) => engine::local(args.config.clone())?,
+    };
     let mut app = App::new(cfg, args.config.clone(), args.web, backend.cmd.clone());
+    app.mode = backend.mode;
 
     let mut terminal = ratatui::init();
     execute!(stdout(), EnableMouseCapture, EnableBracketedPaste)?;
@@ -223,6 +261,14 @@ async fn main() -> Result<()> {
                     mouse_on = true;
                     app.reload();
                 }
+                Effect::InstallDaemon => {
+                    let msg = switch_to_daemon(&mut app, &mut backend).await;
+                    app.toast(msg);
+                }
+                Effect::UninstallDaemon => {
+                    let msg = switch_to_local(&mut app, &mut backend).await;
+                    app.toast(msg);
+                }
             }
         }
 
@@ -239,11 +285,82 @@ async fn main() -> Result<()> {
 
     execute!(stdout(), DisableMouseCapture, DisableBracketedPaste)?;
     ratatui::restore();
-    // Cerrar los canales deja que el motor escriba lo pendiente al disco.
+    // Deja que el motor escriba lo pendiente al disco.
     drop(app);
-    drop(backend);
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    backend.shutdown().await;
     result
+}
+
+/// Backend sin motor detrás, mientras se cambia de uno a otro.
+fn detached() -> engine::Backend {
+    let (cmd, _) = mpsc::unbounded_channel();
+    let (_, events) = mpsc::unbounded_channel();
+    engine::Backend {
+        cmd,
+        events,
+        mode: engine::Mode::Local,
+        task: None,
+    }
+}
+
+fn adopt(app: &mut App, backend: &mut engine::Backend, new: engine::Backend) {
+    app.set_backend(new.cmd.clone(), new.mode);
+    *backend = new;
+}
+
+/// Instala el daemon y pasa a mostrarlo. El motor local se detiene antes,
+/// para soltar el candado que el daemon necesita.
+async fn switch_to_daemon(app: &mut App, backend: &mut engine::Backend) -> String {
+    if let Err(e) = daemon::write_unit(&app.cfg_path) {
+        return format!("no pude instalar el daemon: {e:#}");
+    }
+    let old = std::mem::replace(backend, detached());
+    old.shutdown().await;
+    if let Err(e) = daemon::enable() {
+        let msg = format!("no pude activar el daemon: {e:#}");
+        if let Ok(b) = engine::local(app.cfg_path.clone()) {
+            adopt(app, backend, b);
+        }
+        return msg;
+    }
+    for _ in 0..40 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        if let Ok(b) = engine::remote::connect().await {
+            adopt(app, backend, b);
+            return "⇄ daemon activo: las alertas siguen aunque cierres".into();
+        }
+    }
+    if let Ok(b) = engine::local(app.cfg_path.clone()) {
+        adopt(app, backend, b);
+    }
+    "el daemon no respondió; mira `journalctl --user -u tuisentry`".into()
+}
+
+/// Quita el daemon y vuelve al motor propio en cuanto suelta el candado.
+async fn switch_to_local(app: &mut App, backend: &mut engine::Backend) -> String {
+    let old = std::mem::replace(backend, detached());
+    old.shutdown().await;
+    let result = daemon::uninstall();
+    for _ in 0..30 {
+        if let Ok(b) = engine::local(app.cfg_path.clone()) {
+            let primary = b.mode == engine::Mode::Local;
+            adopt(app, backend, b);
+            if primary {
+                break;
+            }
+            let old = std::mem::replace(backend, detached());
+            old.shutdown().await;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    if backend.mode == engine::Mode::Local && backend.task.is_none() {
+        // Ningún intento funcionó: sin motor.
+        return "no pude reiniciar el motor; reabre tuisentry".into();
+    }
+    match result {
+        Ok(()) => "daemon quitado: esta ventana vuelve a guardar y alertar".into(),
+        Err(e) => format!("daemon: {e:#}"),
+    }
 }
 
 /// Suspende la TUI, abre la config en `$VISUAL`/`$EDITOR` (o nano) y la restaura.
